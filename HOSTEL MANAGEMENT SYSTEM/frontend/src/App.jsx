@@ -50,7 +50,7 @@ const adminNav = [
   ["Dashboard", "/", LayoutDashboard],
   ["Students", "/students", Users],
   ["Rooms", "/rooms", Building2],
-  ["Payments", "/payments", CreditCard],
+  ["Rent Management", "/payments", CreditCard],
   ["Dues", "/dues", Receipt],
   ["Expenses", "/expenses", WalletCards],
   ["Outings", "/outings", DoorOpen],
@@ -63,6 +63,7 @@ const studentNav = [
   ["Payments", "/student/payments", Receipt],
   ["Outing", "/student/outing", DoorOpen],
   ["Complaints", "/student/complaints", MessageSquareWarning],
+  ["Notifications", "/student/notifications", Bell],
   ["Profile", "/student/profile", UserRound]
 ];
 
@@ -186,7 +187,7 @@ function AdminShell({ user, onLogout }) {
 }
 
 function StudentShell({ onLogout }) {
-  return <div className="min-h-screen bg-surface pb-20 md:pb-0"><header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4"><b className="text-brand">JTBH Student</b><button className="btn-muted" onClick={onLogout}><LogOut size={18} /></button></header><main className="p-4 md:p-6"><StudentRoutes /></main><nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-slate-200 bg-white md:hidden">{studentNav.map(([label, to, Icon]) => <NavLink key={to} to={to} className={({ isActive }) => `grid place-items-center gap-1 py-2 text-[11px] font-semibold ${isActive ? "text-brand" : "text-slate-500"}`}><Icon size={18} />{label}</NavLink>)}</nav></div>;
+  return <div className="min-h-screen bg-surface pb-20 md:pb-0"><header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4"><b className="text-brand">JTBH Student</b><button className="btn-muted" onClick={onLogout}><LogOut size={18} /></button></header><main className="p-4 md:p-6"><StudentRoutes /></main><nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-6 border-t border-slate-200 bg-white md:hidden">{studentNav.map(([label, to, Icon]) => <NavLink key={to} to={to} className={({ isActive }) => `grid place-items-center gap-1 py-2 text-[10px] font-semibold ${isActive ? "text-brand" : "text-slate-500"}`}><Icon size={18} />{label}</NavLink>)}</nav></div>;
 }
 
 function Topbar({ user, onLogout, openMenu }) {
@@ -202,7 +203,7 @@ function AdminRoutes() {
 }
 
 function StudentRoutes() {
-  return <Routes><Route path="/student" element={<StudentHome />} /><Route path="/student/payments" element={<StudentPayments />} /><Route path="/student/outing" element={<StudentOuting />} /><Route path="/student/complaints" element={<StudentComplaints />} /><Route path="/student/profile" element={<StudentProfileSelf />} /><Route path="*" element={<StudentHome />} /></Routes>;
+  return <Routes><Route path="/student" element={<StudentHome />} /><Route path="/student/payments" element={<StudentPayments />} /><Route path="/student/outing" element={<StudentOuting />} /><Route path="/student/complaints" element={<StudentComplaints />} /><Route path="/student/notifications" element={<StudentNotifications />} /><Route path="/student/profile" element={<StudentProfileSelf />} /><Route path="*" element={<StudentHome />} /></Routes>;
 }
 
 function Page({ title, action, children }) {
@@ -409,7 +410,7 @@ function Payments() {
   const groupedPayments = Object.values(payments.payments.reduce((groups, payment) => { const key = payment.student_id; (groups[key] ||= { student: payment.student, student_id: key, payments: [] }).payments.push(payment); return groups; }, {}));
   const sortedStudents = groupedPayments.sort((a, b) => { const aDate = a.payments.reduce((latest, payment) => payment.payment_date > latest ? payment.payment_date : latest, ""); const bDate = b.payments.reduce((latest, payment) => payment.payment_date > latest ? payment.payment_date : latest, ""); return sort === "newest" ? bDate.localeCompare(aDate) : aDate.localeCompare(bDate); });
   const history = historyStudent ? payments.payments.filter((payment) => payment.student_id === historyStudent.student_id).sort((a, b) => b.payment_date.localeCompare(a.payment_date)) : [];
-  return <Page title="Payments"><section className="card p-4"><h2 className="font-bold">Record Payment</h2><form onSubmit={submit} className="mt-3 grid gap-3 md:grid-cols-6"><select required className="input" value={form.student_id || ""} onChange={(e) => setForm({ ...form, student_id: e.target.value })}><option value="">Student</option>{students.students.map((s) => <option key={s.id} value={s.id}>{s.full_name}</option>)}</select><select className="input" value={form.invoice_id || ""} onChange={(e) => setForm({ ...form, invoice_id: e.target.value })}><option value="">Current invoice</option>{invoices.invoices.map((i) => <option key={i.id} value={i.id}>{i.student} - {i.month} - {formatMoney(i.balance)}</option>)}</select><input required className="input" type="number" placeholder="Amount" value={form.amount || ""} onChange={(e) => setForm({ ...form, amount: e.target.value })} /><input required className="input" type="datetime-local" value={form.payment_date} onChange={(e) => setForm({ ...form, payment_date: e.target.value })} /><select className="input" value={form.method} onChange={(e) => setForm({ ...form, method: e.target.value })}>{["Cash", "UPI", "Bank Transfer", "Card", "Other"].map((m) => <option key={m}>{m}</option>)}</select><button className="btn-primary">Record</button></form></section><div className="mt-5 flex justify-end"><select className="input w-36" value={sort} onChange={(e) => setSort(e.target.value)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></div><DataList headers={["Student", "Transactions", "Latest Payment", "Total Paid"]}>{sortedStudents.map((student) => <tr key={student.student_id} className="mobile-row"><td><button className="font-semibold text-brand" onClick={() => setHistoryStudent(student)}>{student.student}</button></td><td>{student.payments.length}</td><td>{formatTimestamp(student.payments.reduce((latest, payment) => payment.payment_date > latest ? payment.payment_date : latest, ""))}</td><td>{formatMoney(student.payments.reduce((total, payment) => total + payment.amount, 0))}</td></tr>)}</DataList>{historyStudent && <DashboardModal title={`${historyStudent.student} Payment History`} onClose={() => setHistoryStudent(null)} search="" setSearch={() => {}}><DataList headers={["Date & Time", "Amount", "Method", "Transaction ID", "Status"]}>{history.map((payment) => <tr key={payment.id} className="mobile-row"><td>{formatTimestamp(payment.payment_date)}</td><td>{formatMoney(payment.amount)}</td><td>{payment.method}</td><td>{payment.transaction_id || "-"}</td><td>{payment.is_cancelled ? "Cancelled" : "Successful"}</td></tr>)}</DataList></DashboardModal>}</Page>;
+  return <Page title="Rent Management"><section className="card p-4"><h2 className="font-bold">Record Payment</h2><form onSubmit={submit} className="mt-3 grid gap-3 md:grid-cols-7"><select required className="input" value={form.student_id || ""} onChange={(e) => setForm({ ...form, student_id: e.target.value })}><option value="">Student</option>{students.students.map((s) => <option key={s.id} value={s.id}>{s.full_name}</option>)}</select><select className="input" value={form.invoice_id || ""} onChange={(e) => setForm({ ...form, invoice_id: e.target.value })}><option value="">Current invoice</option>{invoices.invoices.map((i) => <option key={i.id} value={i.id}>{i.student} - {i.month} - {formatMoney(i.balance)}</option>)}</select><input required className="input" type="number" placeholder="Amount" value={form.amount || ""} onChange={(e) => setForm({ ...form, amount: e.target.value })} /><input className="input" placeholder="Transaction / Reference ID" value={form.transaction_id || ""} onChange={(e) => setForm({ ...form, transaction_id: e.target.value })} /><input required className="input" type="datetime-local" value={form.payment_date} onChange={(e) => setForm({ ...form, payment_date: e.target.value })} /><select className="input" value={form.method} onChange={(e) => setForm({ ...form, method: e.target.value })}>{["Cash", "UPI", "Bank Transfer", "Card", "Other"].map((m) => <option key={m}>{m}</option>)}</select><button className="btn-primary">Record</button></form></section><div className="mt-5 flex justify-end"><select className="input w-36" value={sort} onChange={(e) => setSort(e.target.value)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></div><DataList headers={["Student", "Transactions", "Latest Payment", "Total Paid"]}>{sortedStudents.map((student) => <tr key={student.student_id} className="mobile-row"><td><button className="font-semibold text-brand" onClick={() => setHistoryStudent(student)}>{student.student}</button></td><td>{student.payments.length}</td><td>{formatTimestamp(student.payments.reduce((latest, payment) => payment.payment_date > latest ? payment.payment_date : latest, ""))}</td><td>{formatMoney(student.payments.reduce((total, payment) => total + payment.amount, 0))}</td></tr>)}</DataList>{historyStudent && <DashboardModal title={`${historyStudent.student} Payment History`} onClose={() => setHistoryStudent(null)} search="" setSearch={() => {}}><DataList headers={["Date & Time", "Amount", "Method", "Transaction ID", "Status"]}>{history.map((payment) => <tr key={payment.id} className="mobile-row"><td>{formatTimestamp(payment.payment_date)}</td><td>{formatMoney(payment.amount)}</td><td>{payment.method}</td><td>{payment.transaction_id || "-"}</td><td>{payment.is_cancelled ? "Cancelled" : "Successful"}</td></tr>)}</DataList></DashboardModal>}</Page>;
 }
 
 function InvoiceTable({ invoices }) {
@@ -462,20 +463,20 @@ function Outings() {
     catch (e) { setError(e.response?.data?.error || "Could not record movement"); }
     finally { setBusy(null); }
   }
-  return <Page title="Outings">{error && <p role="alert" className="text-red-700">{error}</p>}<div className="mb-5 grid gap-3 sm:grid-cols-4">{[["Total Today", "total"], ["Approved", "approved"], ["Currently Out", "currently_out"], ["Returned", "returned"]].map(([label, key]) => <Stat key={key} label={label} value={data.summary[key]} icon={DoorOpen} />)}</div><DataList headers={["Student", "Room", "Date", "Destination", "Expected", "Departure", "Arrival", "Status", "Actions"]}>{data.outings.map(o => <tr key={o.id} className="mobile-row"><td>{o.student}</td><td>{o.room}</td><td>{o.outing_date}</td><td>{o.destination}</td><td>{o.expected_return_time}</td><td>{formatTimestamp(o.actual_leaving_time)}</td><td>{formatTimestamp(o.actual_return_time)}</td><td><StatusBadge status={o.status} /></td><td><div className="flex flex-wrap gap-2">{(o.status === "Pending" ? [["approve", "Approve"], ["reject", "Reject"]] : o.status === "Approved" ? [["out", "Mark Outgoing"]] : ["Out", "Currently Out", "Late"].includes(o.status) ? [["returned", "Mark Incoming"]] : []).map(([name, label]) => <button key={name} disabled={busy !== null} className="btn-muted" onClick={() => action(o.id, name)}>{label}</button>)}</div></td></tr>)}</DataList></Page>;
+  return <Page title="Outings">{error && <p role="alert" className="text-red-700">{error}</p>}<div className="mb-5 grid gap-3 sm:grid-cols-4">{[["Total Today", "total"], ["Approved", "approved"], ["Currently Out", "currently_out"], ["Returned", "returned"]].map(([label, key]) => <Stat key={key} label={label} value={data.summary[key]} icon={DoorOpen} />)}</div><DataList headers={["Student", "Room", "Date", "Destination", "Expected", "Departure", "Arrival", "Status", "Actions"]}>{data.outings.map(o => <tr key={o.id} className="mobile-row"><td>{o.student}</td><td>{o.room}</td><td>{o.outing_date}</td><td>{o.destination}</td><td>{o.expected_return_time}</td><td>{formatTimestamp(o.actual_leaving_time)}</td><td>{formatTimestamp(o.actual_return_time)}</td><td><StatusBadge status={o.status} /></td><td><div className="flex flex-wrap gap-2">{(o.status === "Pending" ? [["approve", "Approve"], ["reject", "Reject"]] : o.status === "Approved" ? [["out", "Record Outing"]] : ["Out", "Currently Out", "Late"].includes(o.status) ? [["returned", "Record Return"]] : []).map(([name, label]) => <button key={name} disabled={busy !== null} className="btn-muted" onClick={() => action(o.id, name)}>{label}</button>)}</div></td></tr>)}</DataList></Page>;
 }
 
 function Complaints({ student = false }) {
   const { data, reload } = useFetch(student ? "/complaints" : "/admin/complaints", { complaints: [] });
   const [items, setItems] = useState([]);
-  const [form, setForm] = useState({ category: "Maintenance", subject: "", description: "" });
+  const [form, setForm] = useState({ category: "Maintenance", priority: "MEDIUM", subject: "", description: "" });
+  const [attachment, setAttachment] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [newCount, setNewCount] = useState(0);
   const [live, setLive] = useState(false);
   useEffect(() => setItems(data.complaints || []), [data.complaints]);
   useEffect(() => {
-    if (student) return undefined;
     const controller = new AbortController();
     let retryTimer;
     let knownIds = null;
@@ -513,8 +514,10 @@ function Complaints({ student = false }) {
   async function submit(e) {
     e.preventDefault(); setBusy(true); setError("");
     try {
-      await api.post("/complaints", form);
-      setForm({ category: "Maintenance", subject: "", description: "" });
+      const payload = attachment ? (() => { const value = new FormData(); Object.entries(form).forEach(([key, item]) => value.append(key, item)); value.append("attachment", attachment); return value; })() : form;
+      await api.post("/complaints", payload);
+      setForm({ category: "Maintenance", priority: "MEDIUM", subject: "", description: "" });
+      setAttachment(null);
       await reload();
     } catch (e) { setError(e.response?.data?.error || "Could not submit complaint"); }
     finally { setBusy(false); }
@@ -523,7 +526,13 @@ function Complaints({ student = false }) {
     try { await api.patch(`/admin/complaints/${id}`, { status }); await reload(); }
     catch (e) { setError(e.response?.data?.error || "Could not update complaint"); }
   }
-  return <Page title={student ? "Raise a Complaint" : "Complaints"} action={!student && <div className="flex items-center gap-3"><span className={`text-sm ${live ? "text-emerald-700" : "text-slate-500"}`}>{live ? "Live updates on" : "Reconnecting..."}</span>{newCount > 0 && <button className="badge bg-red-100 text-red-700" onClick={() => setNewCount(0)}>{newCount} new</button>}</div>}>{error && <p role="alert" className="mb-3 text-red-700">{error}</p>}{student && <section className="card p-4"><h2 className="font-bold">Complaint Box</h2><form onSubmit={submit} className="mt-3 grid gap-3"><label>Category<select className="input" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}>{["Maintenance", "Electrical", "Plumbing", "Wi-Fi", "Food", "Cleaning", "Security", "Other"].map(category => <option key={category}>{category}</option>)}</select></label><label>Subject<input required maxLength={255} className="input" value={form.subject} onChange={e => setForm({ ...form, subject: e.target.value })} /></label><label>Description<textarea required rows={4} className="input" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></label><button disabled={busy} className="btn-primary">{busy ? "Submitting..." : "Submit Complaint"}</button></form></section>}<h2 className="mt-5 font-bold">{student ? "My Complaints" : "Recent Complaints"}</h2><DataList className="mt-3" headers={student ? ["Category", "Subject", "Description", "Date", "Status"] : ["Student", "Room", "Category", "Subject", "Description", "Date", "Status"]}>{items.map(c => <tr key={c.id} className="mobile-row">{!student && <><td>{c.student}</td><td>{c.room || "Unallocated"}</td></>}<td>{c.category}</td><td>{c.subject}</td><td className="whitespace-pre-wrap">{c.description}</td><td>{formatTimestamp(c.created_at)}</td><td>{student ? <StatusBadge status={c.status} /> : <select aria-label={`Status for ${c.subject}`} className="input" value={c.status} onChange={e => update(c.id, e.target.value)}>{["PENDING", "IN_PROGRESS", "RESOLVED"].map(status => <option key={status}>{status.replace("_", " ")}</option>)}</select>}</td></tr>)}</DataList>{!items.length && <p className="p-4 text-slate-500">No complaints yet.</p>}</Page>;
+  async function followUp(id) {
+    const message = window.prompt("Add a follow-up message");
+    if (!message?.trim()) return;
+    try { await api.post(`/complaints/${id}/follow-ups`, { message }); await reload(); }
+    catch (e) { setError(e.response?.data?.error || "Could not add follow-up"); }
+  }
+  return <Page title={student ? "Raise a Complaint" : "Complaint Management"} action={!student && <div className="flex items-center gap-3"><span className={`text-sm ${live ? "text-emerald-700" : "text-slate-500"}`}>{live ? "Live updates on" : "Reconnecting..."}</span>{newCount > 0 && <button className="badge bg-red-100 text-red-700" onClick={() => setNewCount(0)}>{newCount} new</button>}</div>}>{error && <p role="alert" className="mb-3 text-red-700">{error}</p>}{student && <section className="card p-4"><h2 className="font-bold">Complaint Box</h2><form onSubmit={submit} className="mt-3 grid gap-3"><label>Category<select className="input" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}>{["Maintenance", "Electrical", "Plumbing", "Wi-Fi", "Food", "Cleaning", "Security", "Other"].map(category => <option key={category}>{category}</option>)}</select></label><label>Subject<input required maxLength={255} className="input" value={form.subject} onChange={e => setForm({ ...form, subject: e.target.value })} /></label><label>Description<textarea required rows={4} className="input" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></label><label>Supporting image/document (optional)<input className="input" type="file" accept="image/*,.pdf,.doc,.docx" onChange={e => setAttachment(e.target.files?.[0] || null)} /></label><button disabled={busy} className="btn-primary">{busy ? "Submitting..." : "Submit Complaint"}</button></form></section>}<h2 className="mt-5 font-bold">{student ? "My Complaints" : "Recent Complaints"}</h2><DataList className="mt-3" headers={student ? ["ID", "Category", "Subject", "Status", "Assigned / Response", "Updated"] : ["Student", "Room", "ID", "Category", "Subject", "Status", "Assigned / Response", "Updated"]}>{items.map(c => <tr key={c.id} className="mobile-row">{!student && <><td>{c.student}</td><td>{c.room || "Unallocated"}</td></>}<td>{c.complaint_no}</td><td>{c.category}</td><td><b>{c.subject}</b><br /><span className="text-xs text-slate-500">{c.description}</span></td><td>{student ? <StatusBadge status={c.status} /> : <select aria-label={`Status for ${c.subject}`} className="input" value={c.status} onChange={e => update(c.id, e.target.value)}>{["SUBMITTED", "UNDER_REVIEW", "IN_PROGRESS", "RESOLVED", "CLOSED"].map(status => <option key={status}>{status.replaceAll("_", " ")}</option>)}</select>}</td><td>{c.assigned_to || "Unassigned"}{c.admin_response && <><br /><span className="text-xs text-slate-500">{c.admin_response}</span></>}{student && !["RESOLVED", "CLOSED"].includes(c.status) && <button className="btn-muted mt-2" onClick={() => followUp(c.id)}>Add follow-up</button>}</td><td>{formatTimestamp(c.last_updated_at)}</td></tr>)}</DataList>{!items.length && <p className="p-4 text-slate-500">No complaints yet.</p>}</Page>;
 }
 
 function StudentProfile() {
@@ -563,12 +572,14 @@ function StudentHome() {
   const { data } = useFetch("/student/dashboard", { student: {}, latest_invoice: null, announcements: [] });
   const s = data.student;
   const inv = data.latest_invoice;
-  return <Page title={`Hello, ${s.full_name || "Student"}`}><div className="grid gap-3 sm:grid-cols-2"><Stat label="Room" value={s.room || "Unallocated"} icon={Building2} /><Stat label="Floor" value={s.floor || "NA"} icon={Building2} /><Stat label="Slot" value={`${s.area || ""} ${s.slot || ""}`} icon={BedDouble} /><Stat label="Monthly Rent" value={formatMoney(s.monthly_rent)} icon={IndianRupee} /><Stat label="Current Due" value={formatMoney(s.balance)} icon={Receipt} /><Stat label="Payment Status" value={inv?.status || "PENDING"} icon={CreditCard} /></div><section className="card mt-5 p-4"><h2 className="font-bold">Announcements</h2><div className="mt-3 space-y-3">{data.announcements.map((a) => <div key={a.id} className="rounded-md bg-slate-50 p-3"><b>{a.title}</b><p className="text-sm text-slate-600">{a.message}</p></div>)}</div></section></Page>;
+  return <Page title={`Hello, ${s.full_name || "Student"}`}><div className="grid gap-3 sm:grid-cols-2"><Stat label="Room" value={s.room || "Unallocated"} icon={Building2} /><Stat label="Floor" value={s.floor || "NA"} icon={Building2} /><Stat label="Slot" value={`${s.area || ""} ${s.slot || ""}`} icon={BedDouble} /><Link to="/student/payments" className="block"><Stat label="Monthly Rent" value={formatMoney(s.monthly_rent)} icon={IndianRupee} /></Link><Link to="/student/complaints" className="block"><Stat label="Complaints" value="Raise & Track" icon={MessageSquareWarning} /></Link><Link to="/student/notifications" className="block"><Stat label="Notifications" value="View Updates" icon={Bell} /></Link><Stat label="Current Due" value={formatMoney(s.balance)} icon={Receipt} /><Stat label="Payment Status" value={inv?.status || "PENDING"} icon={CreditCard} /></div><section className="card mt-5 p-4"><h2 className="font-bold">Announcements</h2><div className="mt-3 space-y-3">{data.announcements.map((a) => <div key={a.id} className="rounded-md bg-slate-50 p-3"><b>{a.title}</b><p className="text-sm text-slate-600">{a.message}</p></div>)}</div></section></Page>;
 }
 
 function StudentPayments() {
   const { data } = useFetch("/student/dashboard", { invoices: [], payments: [] });
   const [error, setError] = useState("");
+  const [status, setStatus] = useState("ALL");
+  const [month, setMonth] = useState("");
   async function receipt(payment) {
     try {
       const response = await api.get(`/payments/${payment.id}/receipt.pdf`, { responseType: "blob" });
@@ -577,7 +588,11 @@ function StudentPayments() {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch { setError("Could not download receipt. Please try again."); }
   }
-  return <Page title="Payment History">{error && <p role="alert" className="text-red-700">{error}</p>}<DataList headers={["Date", "Amount", "Purpose", "Status", "Receipt"]}>{[...data.payments].sort((a,b) => b.payment_date.localeCompare(a.payment_date)).map(p => <tr key={`p${p.id}`} className="mobile-row"><td>{formatTimestamp(p.payment_date)}</td><td>{formatMoney(p.amount)}</td><td>{p.purpose}</td><td><StatusBadge status={p.is_cancelled ? "Cancelled" : "Paid"} /></td><td><button disabled={p.is_cancelled} className="btn-muted" onClick={() => receipt(p)}><Download size={16} /> Download Receipt</button></td></tr>)}{data.invoices.filter(i => i.balance > 0).map(i => <tr key={`i${i.id}`} className="mobile-row"><td>{i.due_date}</td><td>{formatMoney(i.balance)}</td><td>Monthly Rent - {i.month} (balance due)</td><td><StatusBadge status={i.status === "OVERDUE" ? "Overdue" : "Pending"} /></td><td>Available after payment</td></tr>)}</DataList>{!data.payments.length && !data.invoices.length && <p className="p-4 text-slate-500">No payment history yet.</p>}</Page>;
+  const rows = data.invoices.map((invoice) => { const payments = data.payments.filter((payment) => payment.invoice_id === invoice.id); const latest = payments[0]; const paymentStatus = latest?.is_cancelled ? "FAILED" : invoice.status; return { ...invoice, payment: latest, paymentStatus }; }).filter((row) => (status === "ALL" || row.paymentStatus === status) && (!month || row.month === month));
+  const paid = data.payments.filter((payment) => !payment.is_cancelled).reduce((sum, payment) => sum + payment.amount, 0);
+  const outstanding = data.invoices.reduce((sum, invoice) => sum + invoice.balance, 0);
+  const nextDue = data.invoices.filter((invoice) => invoice.balance > 0).sort((a, b) => a.due_date.localeCompare(b.due_date))[0]?.due_date || "-";
+  return <Page title="Rent & Payment History">{error && <p role="alert" className="text-red-700">{error}</p>}<div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><Stat label="Total Rent Paid" value={formatMoney(paid)} icon={Receipt} /><Stat label="Current Month Rent" value={formatMoney(data.latest_invoice?.total_amount || 0)} icon={IndianRupee} /><Stat label="Outstanding Amount" value={formatMoney(outstanding)} icon={CreditCard} /><Stat label="Next Due Date" value={nextDue} icon={Receipt} /></div><div className="mb-3 flex flex-wrap gap-3"><select className="input w-40" value={status} onChange={e => setStatus(e.target.value)}>{["ALL", "PAID", "PENDING", "FAILED", "OVERDUE"].map(value => <option key={value}>{value}</option>)}</select><input className="input w-44" type="month" value={month} onChange={e => setMonth(e.target.value)} /></div><DataList headers={["Billing Period", "Rent", "Due Date", "Paid On", "Method", "Reference ID", "Late Fee", "Total Paid", "Status", "Receipt"]}>{rows.map(row => <tr key={row.id} className="mobile-row"><td>{row.month}</td><td>{formatMoney(row.total_amount)}</td><td>{row.due_date}</td><td>{formatTimestamp(row.payment?.payment_date)}</td><td>{row.payment?.method || "-"}</td><td>{row.payment?.transaction_id || "-"}</td><td>{formatMoney(row.payment?.late_fee || 0)}</td><td>{formatMoney(row.amount_paid)}</td><td><StatusBadge status={row.paymentStatus} /></td><td>{row.payment && !row.payment.is_cancelled ? <button className="btn-muted" onClick={() => receipt(row.payment)}><Download size={16} /> Receipt</button> : "Available after payment"}</td></tr>)}</DataList>{!rows.length && <p className="p-4 text-slate-500">No rent transactions match these filters.</p>}</Page>;
 }
 
 function StudentOuting() {
@@ -594,6 +609,11 @@ function StudentOuting() {
 
 function StudentComplaints() {
   return <Complaints student />;
+}
+
+function StudentNotifications() {
+  const { data } = useFetch("/notifications", { notifications: [] });
+  return <Page title="Notifications"><section className="card divide-y divide-slate-100">{data.notifications.map((notification) => <div key={notification.id} className="p-4"><p className="font-semibold">{notification.message}</p><p className="mt-1 text-xs text-slate-500">{formatTimestamp(notification.created_at)}</p></div>)}{!data.notifications.length && <p className="p-4 text-slate-500">No notifications yet.</p>}</section></Page>;
 }
 
 function StudentProfileSelf() {

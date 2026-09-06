@@ -56,7 +56,7 @@ def ensure_sqlite_schema(app):
     if not app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
         return
     additions = {
-        "complaint": [("subject", "VARCHAR(255)"), ("title", "VARCHAR(255)")],
+        "complaint": [("subject", "VARCHAR(255)"), ("title", "VARCHAR(255)"), ("assigned_to_id", "INTEGER"), ("admin_response", "TEXT"), ("last_updated_at", "DATETIME")],
         "student": [
             ("joining_date", "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"),
             ("removed_at", "DATETIME"),
@@ -78,6 +78,8 @@ def ensure_sqlite_schema(app):
         "payment": [
             ("payment_date", "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"),
         ],
+        "notification": [("user_id", "INTEGER")],
+        "outing_request": [("request_no", "VARCHAR(40)"), ("admin_remarks", "TEXT")],
     }
     engine = db.engine
     with engine.begin() as conn:
@@ -95,3 +97,4 @@ def ensure_sqlite_schema(app):
             elif table == "complaint":
                 # Migrate records created by the pre-title complaint implementation.
                 conn.exec_driver_sql("UPDATE complaint SET title = COALESCE(NULLIF(title, ''), subject, category, 'Complaint')")
+                conn.exec_driver_sql("UPDATE complaint SET last_updated_at = COALESCE(last_updated_at, updated_at, created_at)")

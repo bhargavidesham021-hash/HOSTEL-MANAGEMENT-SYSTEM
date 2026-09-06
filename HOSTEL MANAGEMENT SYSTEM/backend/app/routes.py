@@ -12,6 +12,8 @@ from .models import (
     Announcement,
     Attendance,
     Complaint,
+    ComplaintEvent,
+    ComplaintMessage,
     Expense,
     ExpenseHistory,
     Floor,
@@ -20,6 +22,7 @@ from .models import (
     MonthlyInvoice,
     Notification,
     OutingRequest,
+    OutingHistory,
     Payment,
     Room,
     RoomSlot,
@@ -44,7 +47,9 @@ from .services import (
 )
 import json
 import time
+import os
 from uuid import uuid4
+from werkzeug.utils import secure_filename
 
 api = Blueprint("api", __name__)
 
@@ -493,6 +498,9 @@ def record_payment():
     db.session.add(payment)
     db.session.flush()
     refresh_invoice(invoice)
+    student_user = User.query.filter_by(student_id=student.id, role="student").first()
+    if student_user:
+        db.session.add(Notification(user_id=student_user.id, message=f"Rent payment {payment.receipt_no} recorded", kind="payment_success"))
     log_action(current_user_id(), f"Recorded payment {payment.receipt_no}", request.remote_addr)
     db.session.commit()
     return serialize_payment(payment), 201
@@ -512,6 +520,10 @@ def serialize_payment(payment):
         "method": payment.method,
         "transaction_id": payment.transaction_id,
         "is_cancelled": payment.is_cancelled,
+        "status": "FAILED" if payment.is_cancelled else "PAID",
+        "month": payment.invoice.month if payment.invoice else None,
+        "late_fee": float(payment.invoice.fine) if payment.invoice else 0,
+        "total_amount_paid": float(payment.amount),
     }
 
 
@@ -655,7 +667,7 @@ def complaint_items(user):
 @api.post("/complaints")
 @roles_required("student")
 def create_complaint():
-    data = body()
+    data = request.form.to_dict() if request.form else body()
     user = User.query.get_or_404(current_user_id())
     # Accept ``title`` as well as the UI's more familiar ``subject`` field.
     subject = data.get("subject") or data.get("title")
@@ -665,24 +677,40 @@ def create_complaint():
         complaint_no=f"JTBH-CMP-{uuid4().hex[:20]}",
         student_id=user.student_id,
         title=subject.strip(), subject=subject.strip(),
-        category=str(data.get("category") or "General").strip(),
-        description=data["description"].strip(), status="PENDING",
+        category=str(data.get("category") or "Other").strip(),
+        description=data["description"].strip(), priority=str(data.get("priority") or "MEDIUM").upper(), status="SUBMITTED",
     )
     db.session.add(complaint)
+    db.session.flush()
+    db.session.add(ComplaintEvent(complaint_id=complaint.id, actor_id=user.id, event_type="submitted", detail="Complaint submitted"))
+    attachment = request.files.get("attachment")
+    if attachment and attachment.filename:
+        upload_dir = os.path.join("uploads", "complaints")
+        os.makedirs(upload_dir, exist_ok=True)
+        filename = f"{complaint.id}-{uuid4().hex[:8]}-{secure_filename(attachment.filename)}"
+        attachment.save(os.path.join(upload_dir, filename))
+        db.session.add(ComplaintMessage(complaint_id=complaint.id, author_id=user.id, message="Supporting attachment uploaded", attachment_path=filename))
     db.session.add(Notification(message=f"New complaint: {complaint.title[:180]}", kind="complaint"))
+    for admin in User.query.filter(User.role.in_(["owner", "staff"]), User.is_active == True).all():
+        db.session.add(Notification(user_id=admin.id, message=f"New complaint {complaint.complaint_no}", kind="complaint"))
     db.session.commit()
     return serialize_complaint(complaint), 201
 
 
 def serialize_complaint(complaint):
     return {"id": complaint.id, "complaint_no": complaint.complaint_no,
-            "student": complaint.student.full_name if complaint.student else None,
+            "student": complaint.student.full_name if complaint.student else None, "student_id": complaint.student_id,
             "room": serialize_student_brief(complaint.student)["room"] if complaint.student else None,
             "title": complaint.title or complaint.subject or complaint.category,
             "subject": complaint.title or complaint.subject or complaint.category,
-            "category": complaint.category, "description": complaint.description,
+            "category": complaint.category, "priority": complaint.priority, "description": complaint.description,
             "created_at": format_timestamp(complaint.created_at),
-            "status": {"OPEN": "PENDING", "Pending": "PENDING", "In Progress": "IN_PROGRESS", "Resolved": "RESOLVED"}.get(complaint.status, complaint.status)}
+            "last_updated_at": format_timestamp(complaint.last_updated_at or complaint.updated_at),
+            "assigned_to": db.session.get(User, complaint.assigned_to_id).name if complaint.assigned_to_id and db.session.get(User, complaint.assigned_to_id) else None,
+            "assigned_to_id": complaint.assigned_to_id, "admin_response": complaint.admin_response,
+            "messages": [{"id": m.id, "message": m.message, "attachment": m.attachment_path, "author": m.author.name, "created_at": format_timestamp(m.created_at)} for m in complaint.messages],
+            "history": [{"id": e.id, "type": e.event_type, "detail": e.detail, "actor": e.actor.name if e.actor else "System", "created_at": format_timestamp(e.created_at)} for e in complaint.events],
+            "status": {"OPEN": "SUBMITTED", "Pending": "SUBMITTED", "In Progress": "IN_PROGRESS", "Resolved": "RESOLVED"}.get(complaint.status, complaint.status)}
 
 
 @api.get("/complaints")
@@ -701,13 +729,58 @@ def admin_complaints():
 @roles_required("owner", "staff")
 def update_admin_complaint(complaint_id):
     complaint = Complaint.query.get_or_404(complaint_id)
-    status = str(body().get("status", "")).upper()
-    if status not in ["PENDING", "IN_PROGRESS", "RESOLVED"]:
+    data = body()
+    status = str(data.get("status", complaint.status)).upper()
+    if status not in ["SUBMITTED", "UNDER_REVIEW", "ASSIGNED", "IN_PROGRESS", "RESOLVED", "CLOSED"]:
         return {"error": "Invalid complaint status"}, 400
+    previous_status = complaint.status
     complaint.status = status
-    complaint.resolved_at = datetime.utcnow() if status == "RESOLVED" else None
+    if status != previous_status:
+        db.session.add(ComplaintEvent(complaint_id=complaint.id, actor_id=current_user_id(), event_type="status", detail=f"Status changed to {status}"))
+    complaint.resolved_at = datetime.utcnow() if status in ["RESOLVED", "CLOSED"] else None
+    if "assigned_to_id" in data:
+        assigned = User.query.get(data["assigned_to_id"]) if data["assigned_to_id"] else None
+        if data["assigned_to_id"] and not assigned:
+            return {"error": "Assigned user not found"}, 404
+        complaint.assigned_to_id = assigned.id if assigned else None
+        db.session.add(ComplaintEvent(complaint_id=complaint.id, actor_id=current_user_id(), event_type="assignment", detail=f"Assigned to {assigned.name if assigned else 'Unassigned'}"))
+    if isinstance(data.get("admin_response"), str) and data["admin_response"].strip():
+        complaint.admin_response = data["admin_response"].strip()
+        db.session.add(ComplaintMessage(complaint_id=complaint.id, author_id=current_user_id(), message=complaint.admin_response))
+        db.session.add(ComplaintEvent(complaint_id=complaint.id, actor_id=current_user_id(), event_type="response", detail="Administrator response added"))
+        student_user = User.query.filter_by(student_id=complaint.student_id, role="student").first()
+        if student_user:
+            db.session.add(Notification(user_id=student_user.id, message=f"Response on complaint {complaint.complaint_no}", kind="complaint_response"))
+    complaint.last_updated_at = datetime.utcnow()
+    log_action(current_user_id(), f"Updated complaint {complaint.complaint_no}", request.remote_addr)
     db.session.commit()
     return serialize_complaint(complaint)
+
+
+@api.post("/complaints/<int:complaint_id>/follow-ups")
+@roles_required("student")
+def add_complaint_follow_up(complaint_id):
+    user = User.query.get_or_404(current_user_id())
+    complaint = Complaint.query.filter_by(id=complaint_id, student_id=user.student_id).first_or_404()
+    if complaint.status in ["RESOLVED", "CLOSED"]:
+        return {"error": "Resolved complaints cannot receive follow-ups"}, 409
+    message = body().get("message", "").strip()
+    if not message:
+        return {"error": "Follow-up message is required"}, 400
+    db.session.add(ComplaintMessage(complaint_id=complaint.id, author_id=user.id, message=message))
+    db.session.add(ComplaintEvent(complaint_id=complaint.id, actor_id=user.id, event_type="follow_up", detail="Student added a follow-up"))
+    complaint.last_updated_at = datetime.utcnow()
+    for admin in User.query.filter(User.role.in_(["owner", "staff"]), User.is_active == True).all():
+        db.session.add(Notification(user_id=admin.id, message=f"Follow-up on {complaint.complaint_no}", kind="complaint_follow_up"))
+    db.session.commit()
+    return serialize_complaint(complaint), 201
+
+
+@api.get("/notifications")
+@jwt_required()
+def notifications():
+    user = User.query.get_or_404(current_user_id())
+    return {"notifications": [{"id": n.id, "message": n.message, "kind": n.kind, "is_read": n.is_read, "created_at": format_timestamp(n.created_at)} for n in Notification.query.filter((Notification.user_id == user.id) | (Notification.user_id == None)).order_by(Notification.created_at.desc()).limit(50).all()]}
 
 
 @api.get("/complaints/stream")
@@ -758,17 +831,25 @@ def update_student_profile():
 
 
 @api.post("/outings")
-@jwt_required()
+@roles_required("student")
 def create_outing():
     data = body()
     user = User.query.get_or_404(current_user_id())
-    student_id = user.student_id if user.role == "student" else data.get("student_id")
+    student_id = user.student_id
     if not student_id:
         return {"error": "student_id is required"}, 400
     student = Student.query.get_or_404(student_id)
+    required = ["outing_date", "leaving_time", "expected_return_time", "destination", "reason"]
+    if any(not str(data.get(field, "")).strip() for field in required):
+        return {"error": "Date, times, destination and reason are required"}, 400
+    outing_date = parse_date(data["outing_date"])
+    if outing_date < date.today() or data["expected_return_time"] <= data["leaving_time"]:
+        return {"error": "Use a valid future date and a return time after departure"}, 400
+    if OutingRequest.query.filter_by(student_id=student_id, outing_date=outing_date).filter(OutingRequest.status.in_(["Pending", "Under Review", "Approved"])).first():
+        return {"error": "An active outing request already exists for this date"}, 409
     outing = OutingRequest(
         student_id=student_id,
-        outing_date=parse_date(data.get("outing_date"), date.today()),
+        request_no=f"OUT-{uuid4().hex[:10].upper()}", outing_date=outing_date,
         leaving_time=data["leaving_time"],
         expected_return_time=data["expected_return_time"],
         destination=data["destination"],
@@ -777,7 +858,9 @@ def create_outing():
         notes=data.get("notes"),
     )
     db.session.add(outing)
-    db.session.add(Notification(message=f"New outing request from {student.full_name}", kind="outing"))
+    db.session.flush()
+    db.session.add(OutingHistory(outing_id=outing.id, actor_id=user.id, detail="Outing request submitted"))
+    for admin in User.query.filter(User.role.in_(["owner", "staff"]), User.is_active == True).all(): db.session.add(Notification(user_id=admin.id, message=f"New outing request {outing.request_no}", kind="outing"))
     log_action(current_user_id(), "Created outing request", request.remote_addr)
     db.session.commit()
     return serialize_outing(outing), 201
@@ -786,7 +869,9 @@ def create_outing():
 @api.get("/outings")
 @jwt_required()
 def outings():
-    items = OutingRequest.query.order_by(OutingRequest.outing_date.desc(), OutingRequest.created_at.desc()).all()
+    user = User.query.get_or_404(current_user_id())
+    query = OutingRequest.query.filter_by(student_id=user.student_id) if user.role == "student" else OutingRequest.query
+    items = query.order_by(OutingRequest.outing_date.desc(), OutingRequest.created_at.desc()).all()
     return {"outings": [serialize_outing(o) for o in items], "summary": outing_summary()}
 
 
@@ -794,20 +879,23 @@ def outings():
 @roles_required("owner", "staff")
 def outing_action(outing_id, action):
     outing = OutingRequest.query.get_or_404(outing_id)
-    transitions = {"approve": "Approved", "reject": "Rejected", "out": "Currently Out", "returned": "Returned"}
+    transitions = {"review": "Under Review", "approve": "Approved", "reject": "Rejected", "changes": "Changes Required", "cancel": "Cancelled", "out": "Currently Out", "returned": "Completed"}
     if action not in transitions:
         return {"error": "Invalid action"}, 400
-    allowed = {"approve": ["Pending"], "reject": ["Pending"], "out": ["Approved"], "returned": ["Out", "Currently Out", "Late"]}
+    allowed = {"review": ["Pending"], "approve": ["Pending", "Under Review", "Changes Required"], "reject": ["Pending", "Under Review"], "changes": ["Pending", "Under Review"], "cancel": ["Approved", "Under Review"], "out": ["Approved"], "returned": ["Out", "Currently Out", "Late"]}
     if outing.status not in allowed[action]:
         return {"error": "Invalid movement transition"}, 409
     outing.status = transitions[action]
+    outing.admin_remarks = body().get("remarks", outing.admin_remarks)
     outing.decided_by_id = current_user_id()
     outing.decided_at = datetime.utcnow()
     if action == "out":
         outing.actual_leaving_time = datetime.utcnow()
     if action == "returned":
         outing.actual_return_time = datetime.utcnow()
-    db.session.add(Notification(message=f"Your outing request is {outing.status}", kind="outing"))
+    db.session.add(OutingHistory(outing_id=outing.id, actor_id=current_user_id(), detail=f"Status changed to {outing.status}"))
+    student_user = User.query.filter_by(student_id=outing.student_id, role="student").first()
+    if student_user: db.session.add(Notification(user_id=student_user.id, message=f"Outing {outing.request_no}: {outing.status}", kind="outing"))
     log_action(current_user_id(), f"Marked outing {outing.id} {outing.status}", request.remote_addr)
     db.session.commit()
     return serialize_outing(outing)
@@ -867,14 +955,14 @@ def outing_summary():
         "total": len(outings_today),
         "approved": len([o for o in outings_today if o.status == "Approved"]),
         "currently_out": len([o for o in outings_today if o.status in ["Out", "Currently Out"]]),
-        "returned": len([o for o in outings_today if o.status == "Returned"]),
+        "returned": len([o for o in outings_today if o.status in ["Returned", "Completed"]]),
         "late": len([o for o in outings_today if o.status == "Late"]),
     }
 
 
 def serialize_outing(outing):
     brief = serialize_student_brief(outing.student)
-    return {"id": outing.id, "student": outing.student.full_name, "student_id": outing.student_id, "room": brief["room"], "phone": outing.student.phone, "outing_date": outing.outing_date.isoformat(), "leaving_time": outing.leaving_time, "expected_return_time": outing.expected_return_time, "destination": outing.destination, "reason": outing.reason, "emergency_contact": outing.emergency_contact, "notes": outing.notes, "status": "Currently Out" if outing.status == "Out" else outing.status, "actual_leaving_time": outing.actual_leaving_time.isoformat() if outing.actual_leaving_time else None, "actual_return_time": outing.actual_return_time.isoformat() if outing.actual_return_time else None}
+    return {"id": outing.id, "request_no": outing.request_no, "student": outing.student.full_name, "student_id": outing.student_id, "room": brief["room"], "phone": outing.student.phone, "outing_date": outing.outing_date.isoformat(), "leaving_time": outing.leaving_time, "expected_return_time": outing.expected_return_time, "destination": outing.destination, "reason": outing.reason, "emergency_contact": outing.emergency_contact, "notes": outing.notes, "admin_remarks": outing.admin_remarks, "status": "Currently Out" if outing.status == "Out" else outing.status, "actual_leaving_time": outing.actual_leaving_time.isoformat() if outing.actual_leaving_time else None, "actual_return_time": outing.actual_return_time.isoformat() if outing.actual_return_time else None, "history": [{"detail": h.detail, "actor": h.actor.name if h.actor else "System", "created_at": format_timestamp(h.created_at)} for h in outing.history]}
 
 
 def serialize_leave(leave):

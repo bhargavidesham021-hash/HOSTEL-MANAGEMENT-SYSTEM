@@ -195,7 +195,32 @@ class Complaint(db.Model, TimestampMixin):
     status = db.Column(db.String(20), default="PENDING", nullable=False)
     resolution = db.Column(db.Text)
     resolved_at = db.Column(db.DateTime)
+    assigned_to_id = db.Column(db.Integer, db.ForeignKey("user.id"))
+    admin_response = db.Column(db.Text)
+    last_updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     student = db.relationship("Student", backref="complaints")
+    messages = db.relationship("ComplaintMessage", backref="complaint", cascade="all, delete-orphan", order_by="ComplaintMessage.created_at")
+    events = db.relationship("ComplaintEvent", backref="complaint", cascade="all, delete-orphan", order_by="ComplaintEvent.created_at")
+
+
+class ComplaintMessage(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    complaint_id = db.Column(db.Integer, db.ForeignKey("complaint.id"), nullable=False)
+    author_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    message = db.Column(db.Text, nullable=False)
+    attachment_path = db.Column(db.String(255))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    author = db.relationship("User")
+
+
+class ComplaintEvent(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    complaint_id = db.Column(db.Integer, db.ForeignKey("complaint.id"), nullable=False)
+    actor_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    event_type = db.Column(db.String(40), nullable=False)
+    detail = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    actor = db.relationship("User")
 
 
 class Attendance(db.Model, TimestampMixin):
@@ -221,6 +246,7 @@ class LeaveRequest(db.Model, TimestampMixin):
 
 class OutingRequest(db.Model, TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
+    request_no = db.Column(db.String(40), unique=True)
     student_id = db.Column(db.Integer, db.ForeignKey("student.id"), nullable=False)
     outing_date = db.Column(db.Date, nullable=False)
     leaving_time = db.Column(db.String(10), nullable=False)
@@ -234,7 +260,18 @@ class OutingRequest(db.Model, TimestampMixin):
     actual_return_time = db.Column(db.DateTime)
     decided_by_id = db.Column(db.Integer, db.ForeignKey("user.id"))
     decided_at = db.Column(db.DateTime)
+    admin_remarks = db.Column(db.Text)
     student = db.relationship("Student", backref="outing_requests")
+    history = db.relationship("OutingHistory", backref="outing", cascade="all, delete-orphan", order_by="OutingHistory.created_at")
+
+
+class OutingHistory(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    outing_id = db.Column(db.Integer, db.ForeignKey("outing_request.id"), nullable=False)
+    actor_id = db.Column(db.Integer, db.ForeignKey("user.id"))
+    detail = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    actor = db.relationship("User")
 
 
 class Visitor(db.Model, TimestampMixin):
@@ -262,6 +299,7 @@ class Announcement(db.Model, TimestampMixin):
 
 class Notification(db.Model, TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"))
     message = db.Column(db.String(255), nullable=False)
     kind = db.Column(db.String(40), default="info")
     is_read = db.Column(db.Boolean, default=False)
