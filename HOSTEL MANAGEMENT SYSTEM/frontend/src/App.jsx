@@ -163,22 +163,33 @@ function InfoCard({ title, value }) {
 }
 
 function LoginPanel({ mode, onBack, onLogin }) {
-  const [form, setForm] = useState(mode === "admin" ? { email: "bhargavi021@gmail.com", password: "MRECW" } : { identifier: "", password: "" });
+  const [creatingAccount, setCreatingAccount] = useState(false);
+  const [form, setForm] = useState(mode === "admin" ? { name: "", email: "", password: "", confirmPassword: "" } : { identifier: "", password: "" });
   const [error, setError] = useState("");
+  const isAdmin = mode === "admin";
+  function switchAdminView() {
+    setCreatingAccount((value) => !value);
+    setError("");
+    setForm({ name: "", email: "", password: "", confirmPassword: "" });
+  }
   async function submit(e) {
     e.preventDefault();
     setError("");
+    if (creatingAccount && form.password !== form.confirmPassword) {
+      setError("Passwords do not match");
+      return;
+    }
     try {
-      const path = mode === "admin" ? "/auth/login" : "/auth/student-login";
-      const payload = mode === "admin" ? { email: form.email, password: form.password } : { identifier: form.identifier, password: form.password };
+      const path = isAdmin ? (creatingAccount ? "/auth/register" : "/auth/login") : "/auth/student-login";
+      const payload = isAdmin ? (creatingAccount ? { name: form.name, email: form.email, password: form.password } : { email: form.email, password: form.password }) : { identifier: form.identifier, password: form.password };
       const res = await api.post(path, payload);
       localStorage.setItem("jtbh_token", res.data.access_token);
       onLogin(res.data.user);
-    } catch {
-      setError("Invalid login details");
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || "Invalid login details");
     }
   }
-  return <div className="grid min-h-screen place-items-center bg-surface p-4"><form onSubmit={submit} className="card w-full max-w-md p-6"><button type="button" className="text-sm font-semibold text-brand" onClick={onBack}>Back to website</button><h1 className="mt-4 text-2xl font-bold">{mode === "admin" ? "Admin Login" : "Student Login"}</h1><p className="mt-1 text-sm text-slate-500">Jai Tulja Bhavani Deluxe Boys Hostel</p><div className="mt-6 space-y-3">{mode === "admin" ? <input className="input" placeholder="Email" value={form.email || ""} onChange={(e) => setForm({ ...form, email: e.target.value })} /> : <input className="input" placeholder="Student ID or phone" value={form.identifier || ""} onChange={(e) => setForm({ ...form, identifier: e.target.value })} />}<input className="input" type="password" placeholder="Password" value={form.password || ""} onChange={(e) => setForm({ ...form, password: e.target.value })} />{error && <p className="text-sm text-red-600">{error}</p>}<button className="btn-primary w-full">Login</button></div></form></div>;
+  return <div className="grid min-h-screen place-items-center bg-surface p-4"><form onSubmit={submit} className="card w-full max-w-md p-5 sm:p-6"><button type="button" className="text-sm font-semibold text-brand" onClick={onBack}>Back to website</button><h1 className="mt-4 text-2xl font-bold">{isAdmin ? (creatingAccount ? "Create Admin Account" : "Admin Login") : "Student Login"}</h1><p className="mt-1 text-sm text-slate-500">Jai Tulja Bhavani Deluxe Boys Hostel</p><div className="mt-6 space-y-3">{creatingAccount && <input required autoComplete="name" className="input" placeholder="Full name" value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} />}{isAdmin ? <input required autoComplete="username" className="input" placeholder="Email or username" value={form.email || ""} onChange={(e) => setForm({ ...form, email: e.target.value })} /> : <input required className="input" placeholder="Student ID or phone" value={form.identifier || ""} onChange={(e) => setForm({ ...form, identifier: e.target.value })} />}<input required minLength={creatingAccount ? 8 : undefined} autoComplete={creatingAccount ? "new-password" : "current-password"} className="input" type="password" placeholder={creatingAccount ? "Password (minimum 8 characters)" : "Password"} value={form.password || ""} onChange={(e) => setForm({ ...form, password: e.target.value })} />{creatingAccount && <input required autoComplete="new-password" className="input" type="password" placeholder="Confirm password" value={form.confirmPassword || ""} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} />}{error && <p role="alert" className="text-sm text-red-600">{error}</p>}<button className="btn-primary w-full">{creatingAccount ? "Create Account" : "Login"}</button>{isAdmin && <button type="button" className="w-full text-sm font-semibold text-brand hover:underline" onClick={switchAdminView}>{creatingAccount ? "Already have an account? Log in" : "Create an admin account"}</button>}</div></form></div>;
 }
 
 function AdminShell({ user, onLogout }) {
@@ -227,7 +238,19 @@ function AdminHome() {
 }
 
 function DataList({ headers, children, className = "" }) {
-  return <div className={`card overflow-hidden ${className}`}><table className="w-full border-collapse text-left text-sm"><thead className="hidden bg-slate-50 text-xs uppercase text-slate-500 md:table-header-group"><tr>{headers.map((h) => <th key={h} className="px-4 py-3">{h}</th>)}</tr></thead><tbody className="block divide-y divide-slate-100 p-4 md:table-row-group md:p-0 [&_td]:block [&_td]:py-1 md:[&_td]:table-cell md:[&_td]:px-4 md:[&_td]:py-3">{children}</tbody></table></div>;
+  const rows = React.Children.map(children, (row) => {
+    if (!React.isValidElement(row)) return row;
+    let column = 0;
+    const labelCells = (cell) => {
+      if (!React.isValidElement(cell)) return cell;
+      if (cell.type === "td") return React.cloneElement(cell, { "data-label": headers[column++] || "" });
+      if (cell.type === React.Fragment) return React.cloneElement(cell, {}, React.Children.map(cell.props.children, labelCells));
+      return cell;
+    };
+    const cells = React.Children.map(row.props.children, labelCells);
+    return React.cloneElement(row, {}, cells);
+  });
+  return <div className={`card overflow-hidden ${className}`}><table className="w-full border-collapse text-left text-sm"><thead className="hidden bg-slate-50 text-xs uppercase text-slate-500 md:table-header-group"><tr>{headers.map((h) => <th key={h} className="px-4 py-3">{h}</th>)}</tr></thead><tbody className="block divide-y divide-slate-100 p-4 md:table-row-group md:p-0 [&_td]:block [&_td]:py-1 md:[&_td]:table-cell md:[&_td]:px-4 md:[&_td]:py-3">{rows}</tbody></table></div>;
 }
 
 function DashboardModal({ title, onClose, search, setSearch, children }) {

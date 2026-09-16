@@ -48,3 +48,31 @@ button, input, select, textarea {
 .mobile-row {
   @apply grid grid-cols-1 gap-1 border-b border-slate-100 py-3 md:table-row md:border-0 md:py-0;
 }
+
+@media (max-width: 767px) {
+  .mobile-row td {
+    display: grid;
+    grid-template-columns: minmax(7.5rem, 40%) minmax(0, 1fr);
+    gap: .75rem;
+    align-items: start;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-row td::before {
+    content: attr(data-label);
+    color: #64748b;
+    font-size: .75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  .mobile-row td:has(.btn-primary),
+  .mobile-row td:has(.btn-muted) {
+    grid-template-columns: 1fr;
+  }
+
+  .mobile-row td:has(.btn-primary)::before,
+  .mobile-row td:has(.btn-muted)::before {
+    margin-bottom: -.25rem;
+  }
+}

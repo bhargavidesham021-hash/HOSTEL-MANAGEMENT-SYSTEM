@@ -37,6 +37,20 @@ class FeatureTests(unittest.TestCase):
         for count in [2,1,2]:
             self.assertEqual(self.client.put(path,headers=self.admin,json={'bedroom_capacity':count}).json['capacity'],count)
         self.assertEqual(self.client.put(path,headers=self.admin,json={'hall_capacity':-1}).status_code,400)
+    def test_admin_registration(self):
+        response = self.client.post('/api/auth/register', json={
+            'name': 'New Admin', 'email': 'new.admin@example.com', 'password': 'secure-pass-123'
+        })
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.json['access_token'])
+        user = User.query.filter_by(email='new.admin@example.com').first()
+        self.assertEqual(user.role, 'staff')
+        self.assertNotEqual(user.password_hash, 'secure-pass-123')
+        self.assertTrue(user.check_password('secure-pass-123'))
+        duplicate = self.client.post('/api/auth/register', json={
+            'name': 'New Admin', 'email': 'new.admin@example.com', 'password': 'secure-pass-123'
+        })
+        self.assertEqual(duplicate.status_code, 409)
     def test_movement(self):
         outing = OutingRequest(student_id=self.student_id, outing_date=date.today(), leaving_time='10:00', expected_return_time='18:00',destination='College',reason='Class')
         db.session.add(outing); db.session.commit(); path=f'/api/outings/{outing.id}'

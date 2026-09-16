@@ -23,7 +23,10 @@ def seed_database():
         owner = User(name="Hostel Owner", email="bhargavi021@gmail.com", role="owner")
         db.session.add(owner)
     owner.email = "bhargavi021@gmail.com"
-    owner.set_password("MRECW")
+    # Only establish the initial development credential.  Do not overwrite a
+    # password hash (or any registered account) every time the app starts.
+    if not owner.password_hash:
+        owner.set_password("MRECW")
 
     if not Floor.query.first():
         structure = {1: ["101", "102", "103", "104"], 2: ["201", "202", "203", "204"], 3: ["301", "302"]}

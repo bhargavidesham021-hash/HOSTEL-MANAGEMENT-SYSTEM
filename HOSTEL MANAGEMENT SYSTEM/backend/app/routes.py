@@ -82,11 +82,44 @@ def current_user_id():
 @api.post("/auth/login")
 def login():
     data = body()
-    user = User.query.filter_by(email=data.get("email", "").lower().strip()).first()
+    identifier = data.get("email", data.get("identifier", "")).lower().strip()
+    user = User.query.filter_by(email=identifier).first()
     if not user or not user.is_active or not user.check_password(data.get("password", "")):
         return jsonify({"error": "Invalid credentials"}), 401
     token = create_access_token(identity=str(user.id), additional_claims={"role": user.role, "name": user.name})
     return {"access_token": token, "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "student_id": user.student_id}}
+
+
+@api.post("/auth/register")
+def register_admin():
+    """Create a staff account in the existing User table.
+
+    The User model already owns password hashing and is shared by all protected
+    admin endpoints, so registrations remain compatible with the current DB.
+    """
+    data = body()
+    name = str(data.get("name", "")).strip()
+    email = str(data.get("email", data.get("identifier", ""))).lower().strip()
+    password = data.get("password", "")
+
+    if not name or not email or not password:
+        return jsonify({"error": "Name, email or username, and password are required"}), 400
+    if len(name) > 120 or len(email) > 180:
+        return jsonify({"error": "Name or email is too long"}), 400
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
+    if User.query.filter_by(email=email).first():
+        return jsonify({"error": "An account with this email or username already exists"}), 409
+
+    user = User(name=name, email=email, role="staff")
+    user.set_password(password)
+    db.session.add(user)
+    db.session.commit()
+    token = create_access_token(identity=str(user.id), additional_claims={"role": user.role, "name": user.name})
+    return {
+        "access_token": token,
+        "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "student_id": None},
+    }, 201
 
 
 @api.post("/auth/student-login")
