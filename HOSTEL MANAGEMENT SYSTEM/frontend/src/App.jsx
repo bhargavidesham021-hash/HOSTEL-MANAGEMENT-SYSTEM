@@ -33,7 +33,7 @@ import {
   Wifi,
   X
 } from "lucide-react";
-import { api, formatMoney, whatsappLink } from "./api";
+import { api, errorMessage, formatMoney, whatsappLink } from "./api";
 
 function currentDateTimeLocal() {
   const now = new Date();
@@ -70,16 +70,35 @@ const studentNav = [
 function useFetch(path, fallback) {
   const [data, setData] = useState(fallback);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const load = async () => {
     setLoading(true);
-    const res = await api.get(path);
-    setData(res.data);
-    setLoading(false);
+    setError("");
+    try {
+      const res = await api.get(path);
+      setData(res.data);
+      return res.data;
+    } catch (requestError) {
+      setError(errorMessage(requestError, "Could not load this information."));
+      return null;
+    } finally {
+      setLoading(false);
+    }
   };
   useEffect(() => {
-    load().catch(() => setLoading(false));
+    load();
   }, [path]);
-  return { data, loading, reload: load };
+  return { data, loading, error, reload: load };
+}
+
+export class AppErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { failed: false }; }
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(error) { console.error("Application rendering error", error); }
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return <div className="grid min-h-screen place-items-center bg-surface p-4"><section className="card w-full max-w-md p-6 text-center"><h1 className="text-xl font-bold">Something went wrong</h1><p className="mt-2 text-sm text-slate-600">The page could not be displayed. Your hostel data has not been changed.</p><button className="btn-primary mt-5" onClick={() => window.location.reload()}>Reload page</button></section></div>;
+  }
 }
 
 function App() {
@@ -185,15 +204,7 @@ function LoginPanel({ mode, onBack, onLogin }) {
       const res = await api.post(path, payload);
       localStorage.setItem("jtbh_token", res.data.access_token);
       onLogin(res.data.user);
-    } catch (requestError) {
-      if (!requestError.response) {
-        setError(requestError.message || "Cannot reach the hostel server. Please try again shortly.");
-      } else if (requestError.response.status >= 500) {
-        setError("The hostel server could not complete this request. Please try again shortly.");
-      } else {
-        setError(requestError.response.data?.error || "Unable to complete this request.");
-      }
-    }
+    } catch (requestError) { setError(errorMessage(requestError, creatingAccount ? "Could not create the account." : "Invalid login details.")); }
   }
   return <div className="grid min-h-screen place-items-center bg-surface p-4"><form onSubmit={submit} className="card w-full max-w-md p-5 sm:p-6"><button type="button" className="text-sm font-semibold text-brand" onClick={onBack}>Back to website</button><h1 className="mt-4 text-2xl font-bold">{isAdmin ? (creatingAccount ? "Create Admin Account" : "Admin Login") : "Student Login"}</h1><p className="mt-1 text-sm text-slate-500">Jai Tulja Bhavani Deluxe Boys Hostel</p><div className="mt-6 space-y-3">{creatingAccount && <input required autoComplete="name" className="input" placeholder="Full name" value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} />}{isAdmin ? <input required autoComplete="username" className="input" placeholder="Email or username" value={form.email || ""} onChange={(e) => setForm({ ...form, email: e.target.value })} /> : <input required className="input" placeholder="Student ID or phone" value={form.identifier || ""} onChange={(e) => setForm({ ...form, identifier: e.target.value })} />}<input required minLength={creatingAccount ? 8 : undefined} autoComplete={creatingAccount ? "new-password" : "current-password"} className="input" type="password" placeholder={creatingAccount ? "Password (minimum 8 characters)" : "Password"} value={form.password || ""} onChange={(e) => setForm({ ...form, password: e.target.value })} />{creatingAccount && <input required autoComplete="new-password" className="input" type="password" placeholder="Confirm password" value={form.confirmPassword || ""} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} />}{error && <p role="alert" className="text-sm text-red-600">{error}</p>}<button className="btn-primary w-full">{creatingAccount ? "Create Account" : "Login"}</button>{isAdmin && <button type="button" className="w-full text-sm font-semibold text-brand hover:underline" onClick={switchAdminView}>{creatingAccount ? "Already have an account? Log in" : "Create an admin account"}</button>}</div></form></div>;
 }
@@ -383,7 +394,7 @@ function BedControl({ room, reload }) {
       const key = delta > 0 || vacant.area === "Bedroom" ? "bedroom_capacity" : "hall_capacity";
       await api.put(`/rooms/${room.id}`, { [key]: data[key] + delta });
       await reload(); setOpen(false);
-    } catch (e) { setError(e.response?.data?.error || e.message); }
+    } catch (e) { setError(errorMessage(e, "Could not update room capacity.")); }
     finally { setBusy(false); }
   }
   return <div className="mt-3"><button className="btn-muted" aria-label={`Manage beds for Room ${room.number}`} aria-expanded={open} onClick={() => setOpen(!open)}>+/-</button>{open && <div className="mt-2 flex gap-2"><button disabled={busy} className="btn-muted" onClick={() => change(1)}>+ Add Bed</button><button disabled={busy || room.capacity === 0 || room.occupied >= room.capacity} className="btn-muted" onClick={() => change(-1)}>- Delete Bed</button></div>}{error && <p role="alert" className="text-sm text-red-700">{error}</p>}</div>;
@@ -489,7 +500,7 @@ function Outings() {
   async function action(id, name) {
     setBusy(id); setError("");
     try { await api.post(`/outings/${id}/${name}`); await reload(); }
-    catch (e) { setError(e.response?.data?.error || "Could not record movement"); }
+    catch (e) { setError(errorMessage(e, "Could not record movement.")); }
     finally { setBusy(null); }
   }
   return <Page title="Outings">{error && <p role="alert" className="text-red-700">{error}</p>}<div className="mb-5 grid gap-3 sm:grid-cols-4">{[["Total Today", "total"], ["Approved", "approved"], ["Currently Out", "currently_out"], ["Returned", "returned"]].map(([label, key]) => <Stat key={key} label={label} value={data.summary[key]} icon={DoorOpen} />)}</div><DataList headers={["Student", "Room", "Date", "Destination", "Expected", "Departure", "Arrival", "Status", "Actions"]}>{data.outings.map(o => <tr key={o.id} className="mobile-row"><td>{o.student}</td><td>{o.room}</td><td>{o.outing_date}</td><td>{o.destination}</td><td>{o.expected_return_time}</td><td>{formatTimestamp(o.actual_leaving_time)}</td><td>{formatTimestamp(o.actual_return_time)}</td><td><StatusBadge status={o.status} /></td><td><div className="flex flex-wrap gap-2">{(o.status === "Pending" ? [["approve", "Approve"], ["reject", "Reject"]] : o.status === "Approved" ? [["out", "Record Outing"]] : ["Out", "Currently Out", "Late"].includes(o.status) ? [["returned", "Record Return"]] : []).map(([name, label]) => <button key={name} disabled={busy !== null} className="btn-muted" onClick={() => action(o.id, name)}>{label}</button>)}</div></td></tr>)}</DataList></Page>;
@@ -548,18 +559,18 @@ function Complaints({ student = false }) {
       setForm({ category: "Maintenance", priority: "MEDIUM", subject: "", description: "" });
       setAttachment(null);
       await reload();
-    } catch (e) { setError(e.response?.data?.error || "Could not submit complaint"); }
+    } catch (e) { setError(errorMessage(e, "Could not submit complaint.")); }
     finally { setBusy(false); }
   }
   async function update(id, status) {
     try { await api.patch(`/admin/complaints/${id}`, { status }); await reload(); }
-    catch (e) { setError(e.response?.data?.error || "Could not update complaint"); }
+    catch (e) { setError(errorMessage(e, "Could not update complaint.")); }
   }
   async function followUp(id) {
     const message = window.prompt("Add a follow-up message");
     if (!message?.trim()) return;
     try { await api.post(`/complaints/${id}/follow-ups`, { message }); await reload(); }
-    catch (e) { setError(e.response?.data?.error || "Could not add follow-up"); }
+    catch (e) { setError(errorMessage(e, "Could not add follow-up.")); }
   }
   return <Page title={student ? "Raise a Complaint" : "Complaint Management"} action={!student && <div className="flex items-center gap-3"><span className={`text-sm ${live ? "text-emerald-700" : "text-slate-500"}`}>{live ? "Live updates on" : "Reconnecting..."}</span>{newCount > 0 && <button className="badge bg-red-100 text-red-700" onClick={() => setNewCount(0)}>{newCount} new</button>}</div>}>{error && <p role="alert" className="mb-3 text-red-700">{error}</p>}{student && <section className="card p-4"><h2 className="font-bold">Complaint Box</h2><form onSubmit={submit} className="mt-3 grid gap-3"><label>Category<select className="input" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}>{["Maintenance", "Electrical", "Plumbing", "Wi-Fi", "Food", "Cleaning", "Security", "Other"].map(category => <option key={category}>{category}</option>)}</select></label><label>Subject<input required maxLength={255} className="input" value={form.subject} onChange={e => setForm({ ...form, subject: e.target.value })} /></label><label>Description<textarea required rows={4} className="input" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></label><label>Supporting image/document (optional)<input className="input" type="file" accept="image/*,.pdf,.doc,.docx" onChange={e => setAttachment(e.target.files?.[0] || null)} /></label><button disabled={busy} className="btn-primary">{busy ? "Submitting..." : "Submit Complaint"}</button></form></section>}<h2 className="mt-5 font-bold">{student ? "My Complaints" : "Recent Complaints"}</h2><DataList className="mt-3" headers={student ? ["ID", "Category", "Subject", "Status", "Assigned / Response", "Updated"] : ["Student", "Room", "ID", "Category", "Subject", "Status", "Assigned / Response", "Updated"]}>{items.map(c => <tr key={c.id} className="mobile-row">{!student && <><td>{c.student}</td><td>{c.room || "Unallocated"}</td></>}<td>{c.complaint_no}</td><td>{c.category}</td><td><b>{c.subject}</b><br /><span className="text-xs text-slate-500">{c.description}</span></td><td>{student ? <StatusBadge status={c.status} /> : <select aria-label={`Status for ${c.subject}`} className="input" value={c.status} onChange={e => update(c.id, e.target.value)}>{["SUBMITTED", "UNDER_REVIEW", "IN_PROGRESS", "RESOLVED", "CLOSED"].map(status => <option key={status}>{status.replaceAll("_", " ")}</option>)}</select>}</td><td>{c.assigned_to || "Unassigned"}{c.admin_response && <><br /><span className="text-xs text-slate-500">{c.admin_response}</span></>}{student && !["RESOLVED", "CLOSED"].includes(c.status) && <button className="btn-muted mt-2" onClick={() => followUp(c.id)}>Add follow-up</button>}</td><td>{formatTimestamp(c.last_updated_at)}</td></tr>)}</DataList>{!items.length && <p className="p-4 text-slate-500">No complaints yet.</p>}</Page>;
 }

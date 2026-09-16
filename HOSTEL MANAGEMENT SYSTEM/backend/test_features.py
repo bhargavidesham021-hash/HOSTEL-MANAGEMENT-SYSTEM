@@ -51,6 +51,21 @@ class FeatureTests(unittest.TestCase):
             'name': 'New Admin', 'email': 'new.admin@example.com', 'password': 'secure-pass-123'
         })
         self.assertEqual(duplicate.status_code, 409)
+    def test_admin_login_and_me_endpoints(self):
+        self.assertEqual(self.client.get('/api/me', headers=self.admin).status_code, 200)
+        invalid = self.client.post('/api/auth/login', json={
+            'email': 'bhargavi021@gmail.com', 'password': 'wrong-password'
+        })
+        self.assertEqual(invalid.status_code, 401)
+        registered = self.client.post('/api/auth/register', json={
+            'name': 'Login Admin', 'email': 'login.admin@example.com', 'password': 'secure-pass-123'
+        })
+        self.assertEqual(registered.status_code, 201)
+        login = self.client.post('/api/auth/login', json={
+            'email': 'login.admin@example.com', 'password': 'secure-pass-123'
+        })
+        self.assertEqual(login.status_code, 200)
+        self.assertTrue(login.json['access_token'])
     def test_movement(self):
         outing = OutingRequest(student_id=self.student_id, outing_date=date.today(), leaving_time='10:00', expected_return_time='18:00',destination='College',reason='Class')
         db.session.add(outing); db.session.commit(); path=f'/api/outings/{outing.id}'

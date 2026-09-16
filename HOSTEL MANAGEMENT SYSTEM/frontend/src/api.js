@@ -1,13 +1,31 @@
 import axios from "axios";
 
+function normaliseApiBaseUrl(value) {
+  const baseUrl = value?.trim().replace(/\/+$/, "");
+  if (!baseUrl) return "";
+  // Accept either https://host or https://host/api. This prevents requests
+  // such as https://host/api/api/me when the environment variable includes /api.
+  return /(?:\/api)+$/i.test(baseUrl) ? baseUrl.replace(/(?:\/api)+$/i, "/api") : `${baseUrl}/api`;
+}
+
 // Local development can use Flask on port 5000. A deployed frontend must be
 // given its deployed API URL through Vercel (or its build environment).
-const configuredApiUrl = import.meta.env.VITE_API_BASE_URL?.trim();
+const configuredApiUrl = normaliseApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
 export const apiBaseUrl = configuredApiUrl || (import.meta.env.DEV ? "http://localhost:5000/api" : "");
 
 export const api = axios.create({
   baseURL: apiBaseUrl
 });
+
+export function errorMessage(error, fallback = "Unable to complete this request.") {
+  const payload = error?.response?.data;
+  const value = payload?.error ?? payload?.message ?? error?.message;
+  if (typeof value === "string" && value.trim()) return value;
+  if (value && typeof value === "object" && typeof value.message === "string") return value.message;
+  if (!error?.response) return "Cannot reach the hostel server. Please check your connection and try again.";
+  if (error.response.status >= 500) return "The hostel server could not complete this request. Please try again shortly.";
+  return fallback;
+}
 
 api.interceptors.request.use((config) => {
   if (!apiBaseUrl) {
