@@ -70,6 +70,7 @@ Student accounts are created from the admin Students page. Enter a student porta
 - Keep uploads on local disk for development. The backend is structured so S3 or Cloudinary storage can be added later.
 - Replace `db.create_all()` with Alembic/Flask-Migrate migrations before multi-environment production rollout.
 - Put the frontend and backend behind HTTPS and restrict `CORS_ORIGINS` to the deployed frontend URL.
+- When deploying the frontend (including Vercel), set `VITE_API_BASE_URL` to the deployed backend URL ending in `/api`; do not use `localhost` in production. Redeploy the frontend after changing it.
 
 ## Next Modules To Extend
 

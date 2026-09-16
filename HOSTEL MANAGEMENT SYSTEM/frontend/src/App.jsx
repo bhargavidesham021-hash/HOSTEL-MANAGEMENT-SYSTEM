@@ -186,7 +186,13 @@ function LoginPanel({ mode, onBack, onLogin }) {
       localStorage.setItem("jtbh_token", res.data.access_token);
       onLogin(res.data.user);
     } catch (requestError) {
-      setError(requestError.response?.data?.error || "Invalid login details");
+      if (!requestError.response) {
+        setError(requestError.message || "Cannot reach the hostel server. Please try again shortly.");
+      } else if (requestError.response.status >= 500) {
+        setError("The hostel server could not complete this request. Please try again shortly.");
+      } else {
+        setError(requestError.response.data?.error || "Unable to complete this request.");
+      }
     }
   }
   return <div className="grid min-h-screen place-items-center bg-surface p-4"><form onSubmit={submit} className="card w-full max-w-md p-5 sm:p-6"><button type="button" className="text-sm font-semibold text-brand" onClick={onBack}>Back to website</button><h1 className="mt-4 text-2xl font-bold">{isAdmin ? (creatingAccount ? "Create Admin Account" : "Admin Login") : "Student Login"}</h1><p className="mt-1 text-sm text-slate-500">Jai Tulja Bhavani Deluxe Boys Hostel</p><div className="mt-6 space-y-3">{creatingAccount && <input required autoComplete="name" className="input" placeholder="Full name" value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} />}{isAdmin ? <input required autoComplete="username" className="input" placeholder="Email or username" value={form.email || ""} onChange={(e) => setForm({ ...form, email: e.target.value })} /> : <input required className="input" placeholder="Student ID or phone" value={form.identifier || ""} onChange={(e) => setForm({ ...form, identifier: e.target.value })} />}<input required minLength={creatingAccount ? 8 : undefined} autoComplete={creatingAccount ? "new-password" : "current-password"} className="input" type="password" placeholder={creatingAccount ? "Password (minimum 8 characters)" : "Password"} value={form.password || ""} onChange={(e) => setForm({ ...form, password: e.target.value })} />{creatingAccount && <input required autoComplete="new-password" className="input" type="password" placeholder="Confirm password" value={form.confirmPassword || ""} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} />}{error && <p role="alert" className="text-sm text-red-600">{error}</p>}<button className="btn-primary w-full">{creatingAccount ? "Create Account" : "Login"}</button>{isAdmin && <button type="button" className="w-full text-sm font-semibold text-brand hover:underline" onClick={switchAdminView}>{creatingAccount ? "Already have an account? Log in" : "Create an admin account"}</button>}</div></form></div>;
