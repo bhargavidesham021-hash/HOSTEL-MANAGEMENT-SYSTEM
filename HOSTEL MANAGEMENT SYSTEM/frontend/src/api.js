@@ -19,6 +19,7 @@ export const api = axios.create({
 
 export function errorMessage(error, fallback = "Unable to complete this request.") {
   const payload = error?.response?.data;
+  if (error?.response?.status === 405) return "The API URL does not accept this login request. Set VITE_API_BASE_URL to your deployed backend URL ending in /api, then rebuild and redeploy the frontend.";
   const value = payload?.error ?? payload?.message ?? error?.message;
   if (typeof value === "string" && value.trim()) return value;
   if (value && typeof value === "object" && typeof value.message === "string") return value.message;
