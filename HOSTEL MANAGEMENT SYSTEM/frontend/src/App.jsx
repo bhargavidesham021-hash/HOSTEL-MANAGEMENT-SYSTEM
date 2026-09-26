@@ -10,10 +10,13 @@ import {
   CreditCard,
   DoorOpen,
   Download,
+  Eye,
+  EyeOff,
   ArrowLeft,
   Edit,
   Home,
   IndianRupee,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -55,7 +58,8 @@ const adminNav = [
   ["Expenses", "/expenses", WalletCards],
   ["Outings", "/outings", DoorOpen],
   ["Complaints", "/complaints", MessageSquareWarning],
-  ["Reports", "/reports", ClipboardList]
+  ["Reports", "/reports", ClipboardList],
+  ["Password", "/account/password", KeyRound]
 ];
 
 const studentNav = [
@@ -104,9 +108,21 @@ export class AppErrorBoundary extends React.Component {
 function App() {
   const [user, setUser] = useState(null);
   const [checking, setChecking] = useState(true);
+  const [authError, setAuthError] = useState("");
   const navigate = useNavigate();
   useEffect(() => {
-    api.get("/me").then((res) => setUser(res.data)).catch(() => localStorage.removeItem("jtbh_token")).finally(() => setChecking(false));
+    const token = localStorage.getItem("jtbh_token");
+    if (!token) { setChecking(false); return; }
+    api.get("/me")
+      .then((res) => {
+        if (!res.data || !res.data.role) throw new Error("The server returned an incomplete user profile. Please log in again.");
+        setUser(res.data);
+      })
+      .catch((error) => {
+        localStorage.removeItem("jtbh_token");
+        setAuthError(errorMessage(error, "Your session could not be restored. Please log in again."));
+      })
+      .finally(() => setChecking(false));
   }, []);
   function logout() {
     localStorage.removeItem("jtbh_token");
@@ -114,12 +130,12 @@ function App() {
     navigate("/");
   }
   if (checking) return <div className="grid min-h-screen place-items-center">Loading...</div>;
-  if (!user) return <PublicSite onLogin={setUser} />;
+  if (!user) return <PublicSite onLogin={(nextUser) => { setAuthError(""); setUser(nextUser); }} authError={authError} />;
   if (user.role === "student") return <StudentShell user={user} onLogout={logout} />;
   return <AdminShell user={user} onLogout={logout} />;
 }
 
-function PublicSite({ onLogin }) {
+function PublicSite({ onLogin, authError }) {
   const [login, setLogin] = useState(null);
   if (login) return <LoginPanel mode={login} onBack={() => setLogin(null)} onLogin={onLogin} />;
   const facilities = [
@@ -132,6 +148,7 @@ function PublicSite({ onLogin }) {
   ];
   return (
     <div className="bg-white text-ink">
+      {authError && <div role="status" className="bg-amber-50 px-4 py-2 text-center text-sm text-amber-900">{authError}</div>}
       <header className="sticky top-0 z-30 border-b border-slate-100 bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3">
           <a href="#home" className="font-bold text-brand">JAI TULJA BHAVANI</a>
@@ -181,32 +198,57 @@ function InfoCard({ title, value }) {
   return <div className="card p-5"><h3 className="font-bold">{title}</h3><p className="mt-2 text-slate-600">{value}</p></div>;
 }
 
+function PasswordInput({ value, onChange, placeholder, autoComplete = "current-password" }) {
+  const [visible, setVisible] = useState(false);
+  return <div className="relative"><input required minLength={autoComplete === "new-password" ? 8 : undefined} autoComplete={autoComplete} className="input pr-11" type={visible ? "text" : "password"} placeholder={placeholder} value={value} onChange={onChange} /><button type="button" aria-label={visible ? "Hide password" : "Show password"} className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-slate-500 hover:text-brand" onClick={() => setVisible(!visible)}>{visible ? <EyeOff size={18} /> : <Eye size={18} />}</button></div>;
+}
+
 function LoginPanel({ mode, onBack, onLogin }) {
-  const [creatingAccount, setCreatingAccount] = useState(false);
-  const [form, setForm] = useState(mode === "admin" ? { name: "", email: "", password: "", confirmPassword: "" } : { identifier: "", password: "" });
-  const [error, setError] = useState("");
   const isAdmin = mode === "admin";
-  function switchAdminView() {
-    setCreatingAccount((value) => !value);
-    setError("");
-    setForm({ name: "", email: "", password: "", confirmPassword: "" });
+  const [stage, setStage] = useState("login");
+  const [form, setForm] = useState({ username: "", identifier: "", password: "", confirmPassword: "", otp: "" });
+  const [reset, setReset] = useState({ resetId: "", completionToken: "", destination: "" });
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const update = (key) => (e) => setForm({ ...form, [key]: e.target.value });
+  function acceptLogin(response) {
+    const token = response?.data?.access_token;
+    const authenticatedUser = response?.data?.user;
+    if (typeof token !== "string" || !token || !authenticatedUser?.role) {
+      throw new Error("The server returned an incomplete login response. Please try again.");
+    }
+    localStorage.setItem("jtbh_token", token);
+    onLogin(authenticatedUser);
   }
   async function submit(e) {
-    e.preventDefault();
-    setError("");
-    if (creatingAccount && form.password !== form.confirmPassword) {
-      setError("Passwords do not match");
-      return;
-    }
+    e.preventDefault(); setError(""); setNotice(""); setBusy(true);
     try {
-      const path = isAdmin ? (creatingAccount ? "/auth/register" : "/auth/login") : "/auth/student-login";
-      const payload = isAdmin ? (creatingAccount ? { name: form.name, email: form.email, password: form.password } : { email: form.email, password: form.password }) : { identifier: form.identifier, password: form.password };
-      const res = await api.post(path, payload);
-      localStorage.setItem("jtbh_token", res.data.access_token);
-      onLogin(res.data.user);
-    } catch (requestError) { setError(errorMessage(requestError, creatingAccount ? "Could not create the account." : "Invalid login details.")); }
+      if (!isAdmin) {
+        const res = await api.post("/auth/student-login", { identifier: form.identifier, password: form.password });
+        acceptLogin(res); return;
+      }
+      if (stage === "login") {
+        const res = await api.post("/auth/login", { username: form.username, password: form.password });
+        acceptLogin(res); return;
+      }
+      if (stage === "request") {
+        const res = await api.post("/auth/password-reset/request", { username: form.username });
+        setReset({ resetId: res.data.reset_id || "", completionToken: "", destination: res.data.destination || "your registered contact" });
+        setNotice(res.data.message); setStage("verify"); return;
+      }
+      if (stage === "verify") {
+        const res = await api.post("/auth/password-reset/verify", { reset_id: reset.resetId, otp: form.otp });
+        setReset({ ...reset, completionToken: res.data.completion_token }); setStage("complete"); return;
+      }
+      if (form.password !== form.confirmPassword) throw new Error("Passwords do not match.");
+      const res = await api.post("/auth/password-reset/complete", { reset_id: reset.resetId, completion_token: reset.completionToken, password: form.password, confirm_password: form.confirmPassword });
+      setNotice(res.data.message); setForm({ username: form.username, identifier: "", password: "", confirmPassword: "", otp: "" }); setStage("login");
+    } catch (requestError) { setError(errorMessage(requestError, "Unable to complete this request.")); }
+    finally { setBusy(false); }
   }
-  return <div className="grid min-h-screen place-items-center bg-surface p-4"><form onSubmit={submit} className="card w-full max-w-md p-5 sm:p-6"><button type="button" className="text-sm font-semibold text-brand" onClick={onBack}>Back to website</button><h1 className="mt-4 text-2xl font-bold">{isAdmin ? (creatingAccount ? "Create Admin Account" : "Admin Login") : "Student Login"}</h1><p className="mt-1 text-sm text-slate-500">Jai Tulja Bhavani Deluxe Boys Hostel</p><div className="mt-6 space-y-3">{creatingAccount && <input required autoComplete="name" className="input" placeholder="Full name" value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} />}{isAdmin ? <input required autoComplete="username" className="input" placeholder="Email or username" value={form.email || ""} onChange={(e) => setForm({ ...form, email: e.target.value })} /> : <input required className="input" placeholder="Student ID or phone" value={form.identifier || ""} onChange={(e) => setForm({ ...form, identifier: e.target.value })} />}<input required minLength={creatingAccount ? 8 : undefined} autoComplete={creatingAccount ? "new-password" : "current-password"} className="input" type="password" placeholder={creatingAccount ? "Password (minimum 8 characters)" : "Password"} value={form.password || ""} onChange={(e) => setForm({ ...form, password: e.target.value })} />{creatingAccount && <input required autoComplete="new-password" className="input" type="password" placeholder="Confirm password" value={form.confirmPassword || ""} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} />}{error && <p role="alert" className="text-sm text-red-600">{error}</p>}<button className="btn-primary w-full">{creatingAccount ? "Create Account" : "Login"}</button>{isAdmin && <button type="button" className="w-full text-sm font-semibold text-brand hover:underline" onClick={switchAdminView}>{creatingAccount ? "Already have an account? Log in" : "Create an admin account"}</button>}</div></form></div>;
+  const title = !isAdmin ? "Student Login" : ({ login: "Admin Login", request: "Forgot Password", verify: "Verify OTP", complete: "Set New Password" }[stage]);
+  return <div className="grid min-h-screen place-items-center bg-surface p-4"><form onSubmit={submit} className="card w-full max-w-md p-5 sm:p-6"><button type="button" className="text-sm font-semibold text-brand" onClick={onBack}>Back to website</button><h1 className="mt-4 text-2xl font-bold">{title}</h1><p className="mt-1 text-sm text-slate-500">Jai Tulja Bhavani Deluxe Boys Hostel</p><div className="mt-6 space-y-3">{!isAdmin ? <><input required className="input" placeholder="Student ID or phone" value={form.identifier} onChange={update("identifier")} /><PasswordInput value={form.password} onChange={update("password")} placeholder="Password" /><button disabled={busy} className="btn-primary w-full">{busy ? "Logging in..." : "Login"}</button></> : stage === "login" ? <><input required autoComplete="username" className="input" placeholder="Username" value={form.username} onChange={update("username")} /><PasswordInput value={form.password} onChange={update("password")} placeholder="Password" /><button disabled={busy} className="btn-primary w-full">{busy ? "Logging in..." : "Login"}</button><button type="button" className="w-full text-sm font-semibold text-brand hover:underline" onClick={() => { setError(""); setNotice(""); setStage("request"); }}>Forgot Password?</button></> : stage === "request" ? <><p className="text-sm text-slate-600">Enter the authorized admin username. A code will be sent to its registered email when email delivery is configured.</p><input required autoComplete="username" className="input" placeholder="Username" value={form.username} onChange={update("username")} /><button disabled={busy} className="btn-primary w-full">{busy ? "Sending..." : "Send OTP"}</button></> : stage === "verify" ? <><p className="text-sm text-slate-600">Enter the six-digit code sent to {reset.destination}. It expires in 5 minutes.</p><input required inputMode="numeric" pattern="[0-9]{6}" maxLength={6} className="input" placeholder="6-digit OTP" value={form.otp} onChange={update("otp")} /><button disabled={busy} className="btn-primary w-full">{busy ? "Verifying..." : "Verify OTP"}</button><button type="button" className="w-full text-sm font-semibold text-brand hover:underline" onClick={() => { setError(""); setStage("request"); }}>Resend OTP</button></> : <><PasswordInput autoComplete="new-password" value={form.password} onChange={update("password")} placeholder="New password (minimum 8 characters)" /><PasswordInput autoComplete="new-password" value={form.confirmPassword} onChange={update("confirmPassword")} placeholder="Confirm new password" /><button disabled={busy} className="btn-primary w-full">{busy ? "Saving..." : "Change Password"}</button></>}{notice && <p role="status" className="text-sm text-emerald-700">{notice}</p>}{error && <p role="alert" className="text-sm text-red-600">{error}</p>}{isAdmin && stage !== "login" && <button type="button" className="w-full text-sm font-semibold text-brand hover:underline" onClick={() => { setError(""); setNotice(""); setStage("login"); }}>Back to Admin Login</button>}</div></form></div>;
 }
 
 function AdminShell({ user, onLogout }) {

@@ -8,10 +8,10 @@ function normaliseApiBaseUrl(value) {
   return /(?:\/api)+$/i.test(baseUrl) ? baseUrl.replace(/(?:\/api)+$/i, "/api") : `${baseUrl}/api`;
 }
 
-// Local development can use Flask on port 5000. A deployed frontend must be
-// given its deployed API URL through Vercel (or its build environment).
+// Every environment reads its API URL from Vite configuration. The local
+// .env.example supplies the development URL; production builds get their own.
 const configuredApiUrl = normaliseApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
-export const apiBaseUrl = configuredApiUrl || (import.meta.env.DEV ? "http://localhost:5000/api" : "");
+export const apiBaseUrl = configuredApiUrl || "";
 
 export const api = axios.create({
   baseURL: apiBaseUrl

@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 import csv
 import io
@@ -24,6 +24,7 @@ from .models import (
     OutingRequest,
     OutingHistory,
     Payment,
+    PasswordResetOTP,
     Room,
     RoomSlot,
     Student,
@@ -48,7 +49,11 @@ from .services import (
 import json
 import time
 import os
+import secrets
+import smtplib
 from uuid import uuid4
+from email.message import EmailMessage
+from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 api = Blueprint("api", __name__)
@@ -79,47 +84,156 @@ def current_user_id():
     return int(identity) if identity else None
 
 
+OTP_EXPIRY_MINUTES = 5
+OTP_MAX_ATTEMPTS = 5
+OTP_RESEND_COOLDOWN_SECONDS = 60
+OTP_REQUEST_LIMIT_PER_HOUR = 5
+
+
+def password_is_valid(password):
+    return isinstance(password, str) and len(password) >= 8
+
+
+def mask_email(email):
+    local, _, domain = email.partition("@")
+    return f"{local[:1]}{'*' * max(1, len(local) - 1)}@{domain}" if domain else "your registered email"
+
+
+def send_otp_email(destination, otp):
+    """SMTP credentials remain server-side environment variables only."""
+    host = os.getenv("SMTP_HOST")
+    username = os.getenv("SMTP_USERNAME")
+    password = os.getenv("SMTP_PASSWORD")
+    sender = os.getenv("SMTP_FROM_EMAIL") or username
+    if not all([host, username, password, sender]):
+        raise RuntimeError("Email OTP is not configured. Set SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD, and SMTP_FROM_EMAIL on the backend.")
+    message = EmailMessage()
+    message["Subject"] = "Hostel admin password reset code"
+    message["From"] = sender
+    message["To"] = destination
+    message.set_content(f"Your Hostel Management admin password reset code is: {otp}\n\nIt expires in {OTP_EXPIRY_MINUTES} minutes. Do not share this code.")
+    with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=15) as client:
+        if os.getenv("SMTP_USE_TLS", "true").lower() != "false":
+            client.starttls()
+        client.login(username, password)
+        client.send_message(message)
+
+
 @api.post("/auth/login")
 def login():
     data = body()
-    identifier = data.get("email", data.get("identifier", "")).lower().strip()
+    identifier = data.get("username", data.get("email", data.get("identifier", ""))).lower().strip()
     user = User.query.filter_by(email=identifier).first()
-    if not user or not user.is_active or not user.check_password(data.get("password", "")):
+    configured_username = os.getenv("ADMIN_USERNAME", "").strip().lower()
+    configured_email = (os.getenv("ADMIN_EMAIL", "").strip() or configured_username).lower()
+    if not user and configured_username and identifier == configured_username:
+        user = User.query.filter_by(email=configured_email).first()
+    # The public admin panel is reserved for the one owner account. Student
+    # sign-in remains on /auth/student-login and cannot obtain an owner token.
+    if not user or user.role != "owner" or not user.is_active or not user.check_password(data.get("password", "")):
         return jsonify({"error": "Invalid credentials"}), 401
     token = create_access_token(identity=str(user.id), additional_claims={"role": user.role, "name": user.name})
     return {"access_token": token, "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "student_id": user.student_id}}
 
 
-@api.post("/auth/register")
-def register_admin():
-    """Create a staff account in the existing User table.
+@api.post("/auth/password-reset/request")
+def request_password_reset():
+    """Issue and email a short-lived OTP without storing it in plaintext."""
+    username = str(body().get("username", "")).lower().strip()
+    user = User.query.filter_by(email=username, role="owner", is_active=True).first()
+    generic = {"message": "If the username matches the authorized admin account, a reset code will be sent."}
+    if not user:
+        return generic, 202
 
-    The User model already owns password hashing and is shared by all protected
-    admin endpoints, so registrations remain compatible with the current DB.
-    """
+    now = datetime.utcnow()
+    recent = PasswordResetOTP.query.filter(
+        PasswordResetOTP.user_id == user.id,
+        PasswordResetOTP.created_at >= now - timedelta(hours=1),
+    ).count()
+    latest = PasswordResetOTP.query.filter_by(user_id=user.id).order_by(PasswordResetOTP.created_at.desc()).first()
+    if recent >= OTP_REQUEST_LIMIT_PER_HOUR:
+        return jsonify({"error": "Too many reset requests. Please try again later."}), 429
+    if latest and (now - latest.created_at).total_seconds() < OTP_RESEND_COOLDOWN_SECONDS:
+        return jsonify({"error": "Please wait before requesting another code.", "retry_after": OTP_RESEND_COOLDOWN_SECONDS}), 429
+
+    otp = f"{secrets.randbelow(1_000_000):06d}"
+    reset = PasswordResetOTP(
+        reset_id=uuid4().hex,
+        user_id=user.id,
+        otp_hash=generate_password_hash(otp),
+        expires_at=now + timedelta(minutes=OTP_EXPIRY_MINUTES),
+    )
+    # Previous codes cannot be reused once another code is requested.
+    PasswordResetOTP.query.filter_by(user_id=user.id, used_at=None).update({"used_at": now})
+    db.session.add(reset)
+    try:
+        send_otp_email(user.email, otp)
+        db.session.commit()
+    except RuntimeError as error:
+        db.session.rollback()
+        return jsonify({"error": str(error)}), 503
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "Unable to send a reset code right now. Please try again later."}), 503
+    return {**generic, "reset_id": reset.reset_id, "destination": mask_email(user.email), "expires_in": OTP_EXPIRY_MINUTES * 60}, 202
+
+
+@api.post("/auth/password-reset/verify")
+def verify_password_reset_otp():
     data = body()
-    name = str(data.get("name", "")).strip()
-    email = str(data.get("email", data.get("identifier", ""))).lower().strip()
-    password = data.get("password", "")
-
-    if not name or not email or not password:
-        return jsonify({"error": "Name, email or username, and password are required"}), 400
-    if len(name) > 120 or len(email) > 180:
-        return jsonify({"error": "Name or email is too long"}), 400
-    if len(password) < 8:
-        return jsonify({"error": "Password must be at least 8 characters"}), 400
-    if User.query.filter_by(email=email).first():
-        return jsonify({"error": "An account with this email or username already exists"}), 409
-
-    user = User(name=name, email=email, role="staff")
-    user.set_password(password)
-    db.session.add(user)
+    reset = PasswordResetOTP.query.filter_by(reset_id=str(data.get("reset_id", ""))).first()
+    now = datetime.utcnow()
+    if not reset or reset.used_at or reset.expires_at <= now or reset.attempts >= OTP_MAX_ATTEMPTS:
+        return jsonify({"error": "The code is invalid or expired. Request a new code."}), 400
+    reset.attempts += 1
+    if not check_password_hash(reset.otp_hash, str(data.get("otp", ""))):
+        if reset.attempts >= OTP_MAX_ATTEMPTS:
+            reset.used_at = now
+        db.session.commit()
+        return jsonify({"error": "The code is invalid or expired. Request a new code."}), 400
+    completion_token = secrets.token_urlsafe(32)
+    reset.completion_token_hash = generate_password_hash(completion_token)
+    reset.verified_at = now
     db.session.commit()
-    token = create_access_token(identity=str(user.id), additional_claims={"role": user.role, "name": user.name})
-    return {
-        "access_token": token,
-        "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "student_id": None},
-    }, 201
+    return {"completion_token": completion_token}
+
+
+@api.post("/auth/password-reset/complete")
+def complete_password_reset():
+    data = body()
+    password = data.get("password", "")
+    if password != data.get("confirm_password"):
+        return jsonify({"error": "Passwords do not match."}), 400
+    if not password_is_valid(password):
+        return jsonify({"error": "Password must be at least 8 characters."}), 400
+    reset = PasswordResetOTP.query.filter_by(reset_id=str(data.get("reset_id", ""))).first()
+    now = datetime.utcnow()
+    if not reset or reset.used_at or not reset.verified_at or reset.expires_at <= now or not reset.completion_token_hash or not check_password_hash(reset.completion_token_hash, str(data.get("completion_token", ""))):
+        return jsonify({"error": "Password reset session is invalid or expired. Request a new code."}), 400
+    user = User.query.get(reset.user_id)
+    if not user or user.role != "owner" or not user.is_active:
+        return jsonify({"error": "Password reset session is invalid or expired. Request a new code."}), 400
+    user.set_password(password)
+    reset.used_at = now
+    db.session.commit()
+    return {"message": "Password changed successfully. You can now log in."}
+
+
+@api.post("/auth/change-password")
+@roles_required("owner")
+def change_password():
+    data = body()
+    user = User.query.get_or_404(current_user_id())
+    password = data.get("password", "")
+    if not user.check_password(data.get("current_password", "")):
+        return jsonify({"error": "Current password is incorrect."}), 400
+    if password != data.get("confirm_password"):
+        return jsonify({"error": "Passwords do not match."}), 400
+    if not password_is_valid(password):
+        return jsonify({"error": "Password must be at least 8 characters."}), 400
+    user.set_password(password)
+    db.session.commit()
+    return {"message": "Password changed successfully."}
 
 
 @api.post("/auth/student-login")

@@ -1,13 +1,16 @@
-from datetime import datetime
+import os
+
+from dotenv import load_dotenv
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
-from dotenv import load_dotenv
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+
 from .extensions import db
 from .models import User
 from .routes import api
 from .seed import seed_database
-import os
 
 
 def create_app():
@@ -15,26 +18,60 @@ def create_app():
     app_dir = os.path.dirname(os.path.abspath(__file__))
     backend_dir = os.path.abspath(os.path.join(app_dir, ".."))
     app = Flask(__name__, instance_path=app_dir)
-    default_db = "sqlite:///" + os.path.join(backend_dir, "hostel.db").replace("\\", "/")
-    app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", default_db)
+
+    is_production = os.getenv("FLASK_ENV", "").lower() == "production" or os.getenv("ENVIRONMENT", "").lower() == "production"
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if database_url.startswith("postgres://"):
+        database_url = "postgresql://" + database_url[len("postgres://"):]
+    is_production = is_production or database_url.startswith("postgresql")
+    if not database_url:
+        if is_production:
+            raise RuntimeError("DATABASE_URL must be configured in production")
+        database_url = "sqlite:///" + os.path.join(backend_dir, "hostel.db").replace("\\", "/")
+    elif is_production and not database_url.startswith("postgresql"):
+        raise RuntimeError("Production DATABASE_URL must point to PostgreSQL")
+    app.config["SQLALCHEMY_DATABASE_URI"] = database_url
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True}
+    if database_url.startswith("postgresql"):
+        app.config["SQLALCHEMY_ENGINE_OPTIONS"].update(pool_size=5, max_overflow=10, pool_recycle=1800)
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-    app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "dev-only-change-me")
+
+    jwt_secret = os.getenv("JWT_SECRET_KEY", "").strip()
+    if is_production and len(jwt_secret) < 32:
+        raise RuntimeError("JWT_SECRET_KEY must contain at least 32 characters in production")
+    if not jwt_secret:
+        jwt_secret = "dev-only-change-me"
+    app.config["JWT_SECRET_KEY"] = jwt_secret
     app.config["UPLOAD_FOLDER"] = os.getenv("UPLOAD_FOLDER", "uploads")
     app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_CONTENT_LENGTH", "5242880"))
 
     db.init_app(app)
-    JWTManager(app)
-    cors_origins = os.getenv(
-        "CORS_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173,http://192.168.1.140:5173",
-    ).split(",")
-    CORS(app, origins=[origin.strip() for origin in cors_origins])
+    jwt = JWTManager(app)
 
+    @jwt.unauthorized_loader
+    def missing_jwt(reason):
+        return jsonify({"error": "Authentication required"}), 401
+
+    @jwt.invalid_token_loader
+    def invalid_jwt(reason):
+        return jsonify({"error": "Invalid authentication token"}), 401
+
+    @jwt.expired_token_loader
+    def expired_jwt(jwt_header, jwt_payload):
+        return jsonify({"error": "Your session has expired. Please log in again."}), 401
+    configured_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+    origins = [origin.strip().rstrip("/") for origin in configured_origins.split(",") if origin.strip()]
+    CORS(app, resources={r"/*": {"origins": origins}}, allow_headers=["Content-Type", "Authorization"], methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
     app.register_blueprint(api, url_prefix="/api")
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "app": "JTBH Hostel Management"}
+        try:
+            db.session.execute(text("SELECT 1"))
+            return {"status": "ok", "app": "JTBH Hostel Management"}
+        except SQLAlchemyError:
+            db.session.rollback()
+            return jsonify({"status": "error", "error": "Database connection failed"}), 503
 
     @app.errorhandler(404)
     def not_found(error):
@@ -42,7 +79,19 @@ def create_app():
 
     @app.errorhandler(400)
     def bad_request(error):
-        return jsonify({"error": str(error)}), 400
+        return jsonify({"error": "Invalid request"}), 400
+
+    @app.errorhandler(500)
+    def internal_error(error):
+        db.session.rollback()
+        app.logger.exception("Unhandled server error")
+        return jsonify({"error": "Internal server error"}), 500
+
+    @app.errorhandler(SQLAlchemyError)
+    def database_error(error):
+        db.session.rollback()
+        app.logger.error("Database operation failed: %s", type(error).__name__)
+        return jsonify({"error": "Database operation failed"}), 503
 
     with app.app_context():
         db.create_all()
@@ -57,44 +106,22 @@ def ensure_sqlite_schema(app):
         return
     additions = {
         "complaint": [("subject", "VARCHAR(255)"), ("title", "VARCHAR(255)"), ("assigned_to_id", "INTEGER"), ("admin_response", "TEXT"), ("last_updated_at", "DATETIME")],
-        "student": [
-            ("joining_date", "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"),
-            ("removed_at", "DATETIME"),
-            ("removed_by_id", "INTEGER"),
-            ("removal_reason", "TEXT"),
-            ("restored_at", "DATETIME"),
-        ],
-        "expense": [
-            ("expense_date", "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"),
-            ("notes", "TEXT"),
-            ("bill_path", "VARCHAR(255)"),
-            ("edited_by_id", "INTEGER"),
-            ("edited_at", "DATETIME"),
-            ("is_deleted", "BOOLEAN DEFAULT 0 NOT NULL"),
-            ("deleted_by_id", "INTEGER"),
-            ("deleted_at", "DATETIME"),
-            ("deletion_reason", "TEXT"),
-        ],
-        "payment": [
-            ("payment_date", "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"),
-        ],
+        "student": [("joining_date", "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"), ("removed_at", "DATETIME"), ("removed_by_id", "INTEGER"), ("removal_reason", "TEXT"), ("restored_at", "DATETIME")],
+        "expense": [("expense_date", "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"), ("notes", "TEXT"), ("bill_path", "VARCHAR(255)"), ("edited_by_id", "INTEGER"), ("edited_at", "DATETIME"), ("is_deleted", "BOOLEAN DEFAULT 0 NOT NULL"), ("deleted_by_id", "INTEGER"), ("deleted_at", "DATETIME"), ("deletion_reason", "TEXT")],
+        "payment": [("payment_date", "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP")],
         "notification": [("user_id", "INTEGER")],
         "outing_request": [("request_no", "VARCHAR(40)"), ("admin_remarks", "TEXT")],
     }
-    engine = db.engine
-    with engine.begin() as conn:
+    with db.engine.begin() as conn:
         for table, columns in additions.items():
             existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()}
+            if not existing:
+                continue
             for name, definition in columns:
                 if name not in existing:
                     conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
-            if table == "student":
-                conn.exec_driver_sql("UPDATE student SET joining_date = joining_date || ' 00:00:00' WHERE joining_date NOT LIKE '% %'")
-            elif table == "expense":
-                conn.exec_driver_sql("UPDATE expense SET expense_date = expense_date || ' 00:00:00' WHERE expense_date NOT LIKE '% %'")
-            elif table == "payment":
-                conn.exec_driver_sql("UPDATE payment SET payment_date = payment_date || ' 00:00:00' WHERE payment_date NOT LIKE '% %'")
-            elif table == "complaint":
-                # Migrate records created by the pre-title complaint implementation.
-                conn.exec_driver_sql("UPDATE complaint SET title = COALESCE(NULLIF(title, ''), subject, category, 'Complaint')")
-                conn.exec_driver_sql("UPDATE complaint SET last_updated_at = COALESCE(last_updated_at, updated_at, created_at)")
+        # Keep SQLite's legacy date normalization limited to rows that need it.
+        for table, column in (("student", "joining_date"), ("expense", "expense_date"), ("payment", "payment_date")):
+            conn.exec_driver_sql(f"UPDATE {table} SET {column} = {column} || ' 00:00:00' WHERE {column} NOT LIKE '% %'")
+        conn.exec_driver_sql("UPDATE complaint SET title = COALESCE(NULLIF(title, ''), subject, category, 'Complaint')")
+        conn.exec_driver_sql("UPDATE complaint SET last_updated_at = COALESCE(last_updated_at, updated_at, created_at)")

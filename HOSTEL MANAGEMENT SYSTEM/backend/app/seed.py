@@ -1,4 +1,5 @@
 from decimal import Decimal
+import os
 from .extensions import db
 from .models import Floor, HostelSetting, Room, RoomSlot, User
 
@@ -16,17 +17,18 @@ def seed_database():
             receipt_prefix="JTBH-REC",
         ))
 
-    owner = User.query.filter_by(email="bhargavi021@gmail.com").first()
-    if not owner:
-        owner = User.query.filter_by(email="owner@jtbh.local").first()
-    if not owner:
-        owner = User(name="Hostel Owner", email="bhargavi021@gmail.com", role="owner")
-        db.session.add(owner)
-    owner.email = "bhargavi021@gmail.com"
-    # Only establish the initial development credential.  Do not overwrite a
-    # password hash (or any registered account) every time the app starts.
-    if not owner.password_hash:
-        owner.set_password("MRECW")
+    admin_username = os.getenv("ADMIN_USERNAME", "").strip()
+    admin_email = (os.getenv("ADMIN_EMAIL", "").strip() or admin_username).lower()
+    admin_password = os.getenv("ADMIN_PASSWORD", "")
+    if admin_email and admin_password:
+        owner = User.query.filter_by(email=admin_email).first()
+        if not owner and admin_username:
+            owner = User.query.filter_by(email=admin_username.lower()).first()
+        if not owner:
+            owner = User(name=os.getenv("ADMIN_NAME", "Hostel Owner"), email=admin_email, role="owner")
+            owner.set_password(admin_password)
+            db.session.add(owner)
+        # Existing owner credentials are deliberately left unchanged.
 
     if not Floor.query.first():
         structure = {1: ["101", "102", "103", "104"], 2: ["201", "202", "203", "204"], 3: ["301", "302"]}
