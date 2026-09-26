@@ -5,6 +5,7 @@ from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
 from .extensions import db
@@ -30,6 +31,11 @@ def create_app():
         database_url = "sqlite:///" + os.path.join(backend_dir, "hostel.db").replace("\\", "/")
     elif is_production and not database_url.startswith("postgresql"):
         raise RuntimeError("Production DATABASE_URL must point to PostgreSQL")
+    if database_url.startswith("postgresql"):
+        parsed_url = make_url(database_url)
+        if "sslmode" not in parsed_url.query:
+            parsed_url = parsed_url.set(query={**parsed_url.query, "sslmode": "require"})
+        database_url = parsed_url.render_as_string(hide_password=False)
     app.config["SQLALCHEMY_DATABASE_URI"] = database_url
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True}
     if database_url.startswith("postgresql"):

@@ -29,7 +29,20 @@ npm run dev
 
 The frontend runs at `http://localhost:5173`. Local SQLite is stored in `backend/hostel.db` and is only the fallback when `DATABASE_URL` is unset.
 
-## Production deployment (Render/Railway or equivalent)
+## Public production deployment
+
+Supabase supplies the PostgreSQL database. This Flask project still needs a Python application host for its API; Supabase does not run this Flask app. The frontend can be deployed separately as a Vite static site.
+
+### Supabase PostgreSQL (no Render required)
+
+1. Create a Supabase project and set a strong database password.
+2. In the project dashboard, open **Connect** and copy the PostgreSQL connection string. For an API host on an IPv4-only network, select **Session pooler** (port 5432). Use the exact pooler host and username Supabase provides; do not construct them yourself.
+3. In the Python backend host's environment settings, set `DATABASE_URL` to that connection string. Keep the password out of Git and frontend variables. The app adds `sslmode=require` if the URI does not already specify SSL.
+4. Deploy the `backend` directory with `pip install -r requirements.txt` and `gunicorn run:app`. Configure the variables below.
+5. On first startup, the app creates missing tables and required default hostel settings without dropping tables or existing rows.
+6. Deploy `frontend` as a static Vite app, set `VITE_API_BASE_URL=https://YOUR-PYTHON-API-DOMAIN/api`, then rebuild.
+
+Supabase documents the connection method and copied connection strings in its [Postgres connection guide](https://supabase.com/docs/guides/database/connecting-to-postgres). For an existing SQLite database, use the migration instructions below after the empty Supabase schema has been initialized.
 
 ### Backend
 
