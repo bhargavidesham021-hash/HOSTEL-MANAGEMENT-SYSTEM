@@ -1,12 +1,13 @@
 import os
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.pool import NullPool
 
 from .extensions import db
 from .models import User
@@ -20,7 +21,12 @@ def create_app():
     backend_dir = os.path.abspath(os.path.join(app_dir, ".."))
     app = Flask(__name__, instance_path=app_dir)
 
-    is_production = os.getenv("FLASK_ENV", "").lower() == "production" or os.getenv("ENVIRONMENT", "").lower() == "production"
+    is_vercel = os.getenv("VERCEL") == "1" or bool(os.getenv("VERCEL_ENV"))
+    is_production = (
+        os.getenv("FLASK_ENV", "").lower() == "production"
+        or os.getenv("ENVIRONMENT", "").lower() == "production"
+        or is_vercel
+    )
     database_url = os.getenv("DATABASE_URL", "").strip()
     if database_url.startswith("postgres://"):
         database_url = "postgresql://" + database_url[len("postgres://"):]
@@ -39,7 +45,12 @@ def create_app():
     app.config["SQLALCHEMY_DATABASE_URI"] = database_url
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True}
     if database_url.startswith("postgresql"):
-        app.config["SQLALCHEMY_ENGINE_OPTIONS"].update(pool_size=5, max_overflow=10, pool_recycle=1800)
+        # Vercel is serverless. Let Supavisor's transaction pooler manage
+        # database connections instead of retaining sockets across invocations.
+        app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+            "poolclass": NullPool,
+            "connect_args": {"connect_timeout": 10},
+        }
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
     jwt_secret = os.getenv("JWT_SECRET_KEY", "").strip()
@@ -48,7 +59,8 @@ def create_app():
     if not jwt_secret:
         jwt_secret = "dev-only-change-me"
     app.config["JWT_SECRET_KEY"] = jwt_secret
-    app.config["UPLOAD_FOLDER"] = os.getenv("UPLOAD_FOLDER", "uploads")
+    default_upload_folder = "/tmp/hostel-uploads" if is_vercel else "uploads"
+    app.config["UPLOAD_FOLDER"] = os.getenv("UPLOAD_FOLDER", default_upload_folder)
     app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_CONTENT_LENGTH", "5242880"))
 
     db.init_app(app)
@@ -69,6 +81,11 @@ def create_app():
     origins = [origin.strip().rstrip("/") for origin in configured_origins.split(",") if origin.strip()]
     CORS(app, resources={r"/*": {"origins": origins}}, allow_headers=["Content-Type", "Authorization"], methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
     app.register_blueprint(api, url_prefix="/api")
+
+    @app.route("/api", defaults={"api_path": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+    @app.route("/api/<path:api_path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+    def unknown_api_route(api_path):
+        return jsonify({"error": "Not found"}), 404
 
     @app.get("/health")
     def health():
@@ -99,10 +116,36 @@ def create_app():
         app.logger.error("Database operation failed: %s", type(error).__name__)
         return jsonify({"error": "Database operation failed"}), 503
 
+    # The Vercel Flask function serves both the API and the compiled Vite app.
+    # Exact API and health routes above take precedence; unknown API paths stay
+    # JSON 404s instead of being swallowed by the React SPA fallback.
+    frontend_dist = os.path.abspath(os.path.join(backend_dir, "..", "frontend", "dist"))
+
+    @app.get("/")
+    def frontend_index():
+        return send_from_directory(frontend_dist, "index.html")
+
+    @app.get("/<path:frontend_path>")
+    def frontend_routes(frontend_path):
+        if frontend_path == "api" or frontend_path.startswith("api/"):
+            return jsonify({"error": "Not found"}), 404
+        candidate = os.path.join(frontend_dist, frontend_path)
+        if os.path.isfile(candidate):
+            return send_from_directory(frontend_dist, frontend_path)
+        return send_from_directory(frontend_dist, "index.html")
+
     with app.app_context():
-        db.create_all()
-        ensure_sqlite_schema(app)
-        seed_database()
+        if database_url.startswith("postgresql"):
+            # Serialize first boot across parallel cold starts; create_all and
+            # seed run in the same transaction, then release the transaction
+            # lock when seed_database commits.
+            db.session.execute(text("SELECT pg_advisory_xact_lock(1680096768)"))
+            db.metadata.create_all(bind=db.session.connection())
+            seed_database()
+        else:
+            db.create_all()
+            ensure_sqlite_schema(app)
+            seed_database()
 
     return app
 

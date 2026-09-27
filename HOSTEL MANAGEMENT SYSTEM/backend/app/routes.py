@@ -1,8 +1,8 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from decimal import Decimal
 import csv
 import io
-from flask import Response, stream_with_context, Blueprint, jsonify, make_response, request, send_file
+from flask import Response, stream_with_context, Blueprint, current_app, jsonify, make_response, request, send_file
 from flask_jwt_extended import create_access_token, get_jwt, get_jwt_identity, jwt_required
 from sqlalchemy import or_
 from .auth import roles_required
@@ -24,7 +24,6 @@ from .models import (
     OutingRequest,
     OutingHistory,
     Payment,
-    PasswordResetOTP,
     Room,
     RoomSlot,
     Student,
@@ -49,11 +48,7 @@ from .services import (
 import json
 import time
 import os
-import secrets
-import smtplib
 from uuid import uuid4
-from email.message import EmailMessage
-from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 api = Blueprint("api", __name__)
@@ -84,39 +79,8 @@ def current_user_id():
     return int(identity) if identity else None
 
 
-OTP_EXPIRY_MINUTES = 5
-OTP_MAX_ATTEMPTS = 5
-OTP_RESEND_COOLDOWN_SECONDS = 60
-OTP_REQUEST_LIMIT_PER_HOUR = 5
-
-
 def password_is_valid(password):
     return isinstance(password, str) and len(password) >= 8
-
-
-def mask_email(email):
-    local, _, domain = email.partition("@")
-    return f"{local[:1]}{'*' * max(1, len(local) - 1)}@{domain}" if domain else "your registered email"
-
-
-def send_otp_email(destination, otp):
-    """SMTP credentials remain server-side environment variables only."""
-    host = os.getenv("SMTP_HOST")
-    username = os.getenv("SMTP_USERNAME")
-    password = os.getenv("SMTP_PASSWORD")
-    sender = os.getenv("SMTP_FROM_EMAIL") or username
-    if not all([host, username, password, sender]):
-        raise RuntimeError("Email OTP is not configured. Set SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD, and SMTP_FROM_EMAIL on the backend.")
-    message = EmailMessage()
-    message["Subject"] = "Hostel admin password reset code"
-    message["From"] = sender
-    message["To"] = destination
-    message.set_content(f"Your Hostel Management admin password reset code is: {otp}\n\nIt expires in {OTP_EXPIRY_MINUTES} minutes. Do not share this code.")
-    with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=15) as client:
-        if os.getenv("SMTP_USE_TLS", "true").lower() != "false":
-            client.starttls()
-        client.login(username, password)
-        client.send_message(message)
 
 
 @api.post("/auth/login")
@@ -134,89 +98,6 @@ def login():
         return jsonify({"error": "Invalid credentials"}), 401
     token = create_access_token(identity=str(user.id), additional_claims={"role": user.role, "name": user.name})
     return {"access_token": token, "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "student_id": user.student_id}}
-
-
-@api.post("/auth/password-reset/request")
-def request_password_reset():
-    """Issue and email a short-lived OTP without storing it in plaintext."""
-    username = str(body().get("username", "")).lower().strip()
-    user = User.query.filter_by(email=username, role="owner", is_active=True).first()
-    generic = {"message": "If the username matches the authorized admin account, a reset code will be sent."}
-    if not user:
-        return generic, 202
-
-    now = datetime.utcnow()
-    recent = PasswordResetOTP.query.filter(
-        PasswordResetOTP.user_id == user.id,
-        PasswordResetOTP.created_at >= now - timedelta(hours=1),
-    ).count()
-    latest = PasswordResetOTP.query.filter_by(user_id=user.id).order_by(PasswordResetOTP.created_at.desc()).first()
-    if recent >= OTP_REQUEST_LIMIT_PER_HOUR:
-        return jsonify({"error": "Too many reset requests. Please try again later."}), 429
-    if latest and (now - latest.created_at).total_seconds() < OTP_RESEND_COOLDOWN_SECONDS:
-        return jsonify({"error": "Please wait before requesting another code.", "retry_after": OTP_RESEND_COOLDOWN_SECONDS}), 429
-
-    otp = f"{secrets.randbelow(1_000_000):06d}"
-    reset = PasswordResetOTP(
-        reset_id=uuid4().hex,
-        user_id=user.id,
-        otp_hash=generate_password_hash(otp),
-        expires_at=now + timedelta(minutes=OTP_EXPIRY_MINUTES),
-    )
-    # Previous codes cannot be reused once another code is requested.
-    PasswordResetOTP.query.filter_by(user_id=user.id, used_at=None).update({"used_at": now})
-    db.session.add(reset)
-    try:
-        send_otp_email(user.email, otp)
-        db.session.commit()
-    except RuntimeError as error:
-        db.session.rollback()
-        return jsonify({"error": str(error)}), 503
-    except Exception:
-        db.session.rollback()
-        return jsonify({"error": "Unable to send a reset code right now. Please try again later."}), 503
-    return {**generic, "reset_id": reset.reset_id, "destination": mask_email(user.email), "expires_in": OTP_EXPIRY_MINUTES * 60}, 202
-
-
-@api.post("/auth/password-reset/verify")
-def verify_password_reset_otp():
-    data = body()
-    reset = PasswordResetOTP.query.filter_by(reset_id=str(data.get("reset_id", ""))).first()
-    now = datetime.utcnow()
-    if not reset or reset.used_at or reset.expires_at <= now or reset.attempts >= OTP_MAX_ATTEMPTS:
-        return jsonify({"error": "The code is invalid or expired. Request a new code."}), 400
-    reset.attempts += 1
-    if not check_password_hash(reset.otp_hash, str(data.get("otp", ""))):
-        if reset.attempts >= OTP_MAX_ATTEMPTS:
-            reset.used_at = now
-        db.session.commit()
-        return jsonify({"error": "The code is invalid or expired. Request a new code."}), 400
-    completion_token = secrets.token_urlsafe(32)
-    reset.completion_token_hash = generate_password_hash(completion_token)
-    reset.verified_at = now
-    db.session.commit()
-    return {"completion_token": completion_token}
-
-
-@api.post("/auth/password-reset/complete")
-def complete_password_reset():
-    data = body()
-    password = data.get("password", "")
-    if password != data.get("confirm_password"):
-        return jsonify({"error": "Passwords do not match."}), 400
-    if not password_is_valid(password):
-        return jsonify({"error": "Password must be at least 8 characters."}), 400
-    reset = PasswordResetOTP.query.filter_by(reset_id=str(data.get("reset_id", ""))).first()
-    now = datetime.utcnow()
-    if not reset or reset.used_at or not reset.verified_at or reset.expires_at <= now or not reset.completion_token_hash or not check_password_hash(reset.completion_token_hash, str(data.get("completion_token", ""))):
-        return jsonify({"error": "Password reset session is invalid or expired. Request a new code."}), 400
-    user = User.query.get(reset.user_id)
-    if not user or user.role != "owner" or not user.is_active:
-        return jsonify({"error": "Password reset session is invalid or expired. Request a new code."}), 400
-    user.set_password(password)
-    reset.used_at = now
-    db.session.commit()
-    return {"message": "Password changed successfully. You can now log in."}
 
 
 @api.post("/auth/change-password")
@@ -832,7 +713,7 @@ def create_complaint():
     db.session.add(ComplaintEvent(complaint_id=complaint.id, actor_id=user.id, event_type="submitted", detail="Complaint submitted"))
     attachment = request.files.get("attachment")
     if attachment and attachment.filename:
-        upload_dir = os.path.join("uploads", "complaints")
+        upload_dir = os.path.join(current_app.config["UPLOAD_FOLDER"], "complaints")
         os.makedirs(upload_dir, exist_ok=True)
         filename = f"{complaint.id}-{uuid4().hex[:8]}-{secure_filename(attachment.filename)}"
         attachment.save(os.path.join(upload_dir, filename))

@@ -25,21 +25,6 @@ class User(db.Model, TimestampMixin):
         return check_password_hash(self.password_hash, password)
 
 
-class PasswordResetOTP(db.Model):
-    """Single-use, expiring reset codes for the authorized owner account."""
-    id = db.Column(db.Integer, primary_key=True)
-    reset_id = db.Column(db.String(64), unique=True, nullable=False, index=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    otp_hash = db.Column(db.String(255), nullable=False)
-    completion_token_hash = db.Column(db.String(255))
-    expires_at = db.Column(db.DateTime, nullable=False)
-    attempts = db.Column(db.Integer, default=0, nullable=False)
-    verified_at = db.Column(db.DateTime)
-    used_at = db.Column(db.DateTime)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    user = db.relationship("User", backref="password_reset_otps")
-
-
 class HostelSetting(db.Model, TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
     hostel_name = db.Column(db.String(180), nullable=False)

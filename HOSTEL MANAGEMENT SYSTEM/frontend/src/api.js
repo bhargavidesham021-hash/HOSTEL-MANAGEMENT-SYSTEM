@@ -1,7 +1,8 @@
 import axios from "axios";
 
 function normaliseApiBaseUrl(value) {
-  const baseUrl = value?.trim().replace(/\/+$/, "");
+  const trimmed = value?.trim().replace(/^\/(https?:\/\/)/i, "$1");
+  const baseUrl = trimmed?.replace(/\/+$/, "");
   if (!baseUrl) return "";
   // Accept either https://host or https://host/api. This prevents requests
   // such as https://host/api/api/me when the environment variable includes /api.
@@ -11,7 +12,9 @@ function normaliseApiBaseUrl(value) {
 // Every environment reads its API URL from Vite configuration. The local
 // .env.example supplies the development URL; production builds get their own.
 const configuredApiUrl = normaliseApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
-export const apiBaseUrl = configuredApiUrl || "";
+// Deployed builds default to the same-origin Flask API. Local development uses
+// frontend/.env.example to point at the separately-running Flask dev server.
+export const apiBaseUrl = configuredApiUrl || (import.meta.env.PROD ? "/api" : "");
 
 export const api = axios.create({
   baseURL: apiBaseUrl
@@ -19,7 +22,7 @@ export const api = axios.create({
 
 export function errorMessage(error, fallback = "Unable to complete this request.") {
   const payload = error?.response?.data;
-  if (error?.response?.status === 405) return "The API URL does not accept this login request. Set VITE_API_BASE_URL to your deployed backend URL ending in /api, then rebuild and redeploy the frontend.";
+  if (error?.response?.status === 405) return "The hostel API rejected this request. Check the deployment routing and try again.";
   const value = payload?.error ?? payload?.message ?? error?.message;
   if (typeof value === "string" && value.trim()) return value;
   if (value && typeof value === "object" && typeof value.message === "string") return value.message;
@@ -30,7 +33,7 @@ export function errorMessage(error, fallback = "Unable to complete this request.
 
 api.interceptors.request.use((config) => {
   if (!apiBaseUrl) {
-    return Promise.reject(new Error("The live site is not connected to its API. Set VITE_API_BASE_URL in the frontend deployment settings and redeploy."));
+    return Promise.reject(new Error("The local API URL is not configured. Set VITE_API_BASE_URL=http://localhost:5000/api in frontend/.env."));
   }
   const token = localStorage.getItem("jtbh_token");
   if (token) config.headers.Authorization = `Bearer ${token}`;

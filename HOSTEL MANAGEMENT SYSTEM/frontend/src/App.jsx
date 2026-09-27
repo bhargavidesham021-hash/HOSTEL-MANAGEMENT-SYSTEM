@@ -205,11 +205,8 @@ function PasswordInput({ value, onChange, placeholder, autoComplete = "current-p
 
 function LoginPanel({ mode, onBack, onLogin }) {
   const isAdmin = mode === "admin";
-  const [stage, setStage] = useState("login");
-  const [form, setForm] = useState({ username: "", identifier: "", password: "", confirmPassword: "", otp: "" });
-  const [reset, setReset] = useState({ resetId: "", completionToken: "", destination: "" });
+  const [form, setForm] = useState({ username: "", identifier: "", password: "" });
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const update = (key) => (e) => setForm({ ...form, [key]: e.target.value });
   function acceptLogin(response) {
@@ -222,33 +219,17 @@ function LoginPanel({ mode, onBack, onLogin }) {
     onLogin(authenticatedUser);
   }
   async function submit(e) {
-    e.preventDefault(); setError(""); setNotice(""); setBusy(true);
+    e.preventDefault(); setError(""); setBusy(true);
     try {
-      if (!isAdmin) {
-        const res = await api.post("/auth/student-login", { identifier: form.identifier, password: form.password });
-        acceptLogin(res); return;
-      }
-      if (stage === "login") {
-        const res = await api.post("/auth/login", { username: form.username, password: form.password });
-        acceptLogin(res); return;
-      }
-      if (stage === "request") {
-        const res = await api.post("/auth/password-reset/request", { username: form.username });
-        setReset({ resetId: res.data.reset_id || "", completionToken: "", destination: res.data.destination || "your registered contact" });
-        setNotice(res.data.message); setStage("verify"); return;
-      }
-      if (stage === "verify") {
-        const res = await api.post("/auth/password-reset/verify", { reset_id: reset.resetId, otp: form.otp });
-        setReset({ ...reset, completionToken: res.data.completion_token }); setStage("complete"); return;
-      }
-      if (form.password !== form.confirmPassword) throw new Error("Passwords do not match.");
-      const res = await api.post("/auth/password-reset/complete", { reset_id: reset.resetId, completion_token: reset.completionToken, password: form.password, confirm_password: form.confirmPassword });
-      setNotice(res.data.message); setForm({ username: form.username, identifier: "", password: "", confirmPassword: "", otp: "" }); setStage("login");
-    } catch (requestError) { setError(errorMessage(requestError, "Unable to complete this request.")); }
+      const res = isAdmin
+        ? await api.post("/auth/login", { username: form.username, password: form.password })
+        : await api.post("/auth/student-login", { identifier: form.identifier, password: form.password });
+      acceptLogin(res);
+    } catch (requestError) { setError(errorMessage(requestError, "Unable to log in. Please try again.")); }
     finally { setBusy(false); }
   }
-  const title = !isAdmin ? "Student Login" : ({ login: "Admin Login", request: "Forgot Password", verify: "Verify OTP", complete: "Set New Password" }[stage]);
-  return <div className="grid min-h-screen place-items-center bg-surface p-4"><form onSubmit={submit} className="card w-full max-w-md p-5 sm:p-6"><button type="button" className="text-sm font-semibold text-brand" onClick={onBack}>Back to website</button><h1 className="mt-4 text-2xl font-bold">{title}</h1><p className="mt-1 text-sm text-slate-500">Jai Tulja Bhavani Deluxe Boys Hostel</p><div className="mt-6 space-y-3">{!isAdmin ? <><input required className="input" placeholder="Student ID or phone" value={form.identifier} onChange={update("identifier")} /><PasswordInput value={form.password} onChange={update("password")} placeholder="Password" /><button disabled={busy} className="btn-primary w-full">{busy ? "Logging in..." : "Login"}</button></> : stage === "login" ? <><input required autoComplete="username" className="input" placeholder="Username" value={form.username} onChange={update("username")} /><PasswordInput value={form.password} onChange={update("password")} placeholder="Password" /><button disabled={busy} className="btn-primary w-full">{busy ? "Logging in..." : "Login"}</button><button type="button" className="w-full text-sm font-semibold text-brand hover:underline" onClick={() => { setError(""); setNotice(""); setStage("request"); }}>Forgot Password?</button></> : stage === "request" ? <><p className="text-sm text-slate-600">Enter the authorized admin username. A code will be sent to its registered email when email delivery is configured.</p><input required autoComplete="username" className="input" placeholder="Username" value={form.username} onChange={update("username")} /><button disabled={busy} className="btn-primary w-full">{busy ? "Sending..." : "Send OTP"}</button></> : stage === "verify" ? <><p className="text-sm text-slate-600">Enter the six-digit code sent to {reset.destination}. It expires in 5 minutes.</p><input required inputMode="numeric" pattern="[0-9]{6}" maxLength={6} className="input" placeholder="6-digit OTP" value={form.otp} onChange={update("otp")} /><button disabled={busy} className="btn-primary w-full">{busy ? "Verifying..." : "Verify OTP"}</button><button type="button" className="w-full text-sm font-semibold text-brand hover:underline" onClick={() => { setError(""); setStage("request"); }}>Resend OTP</button></> : <><PasswordInput autoComplete="new-password" value={form.password} onChange={update("password")} placeholder="New password (minimum 8 characters)" /><PasswordInput autoComplete="new-password" value={form.confirmPassword} onChange={update("confirmPassword")} placeholder="Confirm new password" /><button disabled={busy} className="btn-primary w-full">{busy ? "Saving..." : "Change Password"}</button></>}{notice && <p role="status" className="text-sm text-emerald-700">{notice}</p>}{error && <p role="alert" className="text-sm text-red-600">{error}</p>}{isAdmin && stage !== "login" && <button type="button" className="w-full text-sm font-semibold text-brand hover:underline" onClick={() => { setError(""); setNotice(""); setStage("login"); }}>Back to Admin Login</button>}</div></form></div>;
+  const title = isAdmin ? "Admin Login" : "Student Login";
+  return <div className="grid min-h-screen place-items-center bg-surface p-4"><form onSubmit={submit} className="card w-full max-w-md p-5 sm:p-6"><button type="button" className="text-sm font-semibold text-brand" onClick={onBack}>Back to website</button><h1 className="mt-4 text-2xl font-bold">{title}</h1><p className="mt-1 text-sm text-slate-500">Jai Tulja Bhavani Deluxe Boys Hostel</p><div className="mt-6 space-y-3">{isAdmin ? <input required autoComplete="username" className="input" placeholder="Username" value={form.username} onChange={update("username")} /> : <input required className="input" placeholder="Student ID or phone" value={form.identifier} onChange={update("identifier")} />}<PasswordInput value={form.password} onChange={update("password")} placeholder="Password" /><button disabled={busy} className="btn-primary w-full">{busy ? "Logging in..." : "Login"}</button>{error && <p role="alert" className="text-sm text-red-600">{error}</p>}</div></form></div>;
 }
 
 function AdminShell({ user, onLogout }) {
